@@ -3,218 +3,176 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>3D OSM Explorer</title>
+  <title>3D OSM Explorer with Aerial View</title>
   <style>
     body { margin: 0; overflow: hidden; font-family: Arial, sans-serif; }
     canvas { display: block; }
-    #ui-container {
-      position: absolute;
-      top: 10px;
-      left: 10px;
-      z-index: 10;
-      background: rgba(255, 255, 255, 0.8);
-      padding: 10px;
-      border-radius: 5px;
-      display: flex;
-      flex-direction: column;
-    }
-    button {
-      margin-bottom: 5px;
-      padding: 5px;
-      cursor: pointer;
-    }
-    #map {
-      width: 150px;
-      height: 150px;
-      background: white;
-      border: 1px solid black;
-      position: absolute;
-      bottom: 10px;
-      left: 10px;
-      display: none;
-    }
-    #compass {
-      width: 100px;
-      height: 100px;
-      background: url('https://upload.wikimedia.org/wikipedia/commons/thumb/e/e1/Compass_Card.svg/120px-Compass_Card.svg.png');
-      background-size: cover;
-      position: absolute;
-      top: 10px;
-      right: 10px;
-      transform-origin: center;
+    #toggleView { 
+      position: absolute; 
+      top: 10px; 
+      left: 10px; 
+      padding: 10px 20px; 
+      font-size: 16px; 
+      background: white; 
+      border: 1px solid black; 
+      cursor: pointer; 
     }
   </style>
 </head>
 <body>
-  <div id="ui-container">
-    <button onclick="toggleMap()">Toggle Map</button>
-    <button onclick="toggleCollision()">Toggle Collision</button>
-  </div>
-  <div id="map"></div>
-  <div id="compass"></div>
-
+  <button id="toggleView">Switch to Aerial View</button>
   <script>
-    const script = document.createElement('script');
+    const script = document.createElement("script");
     script.src = "https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js";
     script.onload = init;
     document.head.appendChild(script);
 
-    let scene, renderer, light;
-    let moveSpeed = 5;
-    let rotateSpeed = 0.05;
-    let lookSpeed = 0.05;
-    let collisionEnabled = true;
-    let keys = {};
-
-    let player, cameraHolder;
+    let scene, renderer, player, cameraHolder, ground, playerMarker, isAerialView = false;
+    let buildings = {}, loadedChunks = new Set();
+    let moveSpeed = 0.0002, rotateSpeed = 0.05, lookSpeed = 0.05;
+    let playerLat = 51.5074, playerLon = -0.1278, chunkSize = 0.0025; // ~250m per chunk
+    let keys = {}, lastPlayerLat = playerLat, lastPlayerLon = playerLon;
+    let zoomLevel = 15; // Tile zoom level
+    let aerialCamera, mainCamera;
 
     function init() {
-        scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x87CEEB); // Sky blue
+      scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x87CEEB);
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(renderer.domElement);
 
-        renderer = new THREE.WebGLRenderer({ antialias: true });
-        renderer.setSize(window.innerWidth, window.innerHeight);
-        document.body.appendChild(renderer.domElement);
+      // Player setup
+      player = new THREE.Object3D();
+      player.position.set(0, 2, 0);
+      scene.add(player);
 
-        light = new THREE.DirectionalLight(0xffffff, 1);
-        light.position.set(5, 10, 5);
-        scene.add(light);
+      cameraHolder = new THREE.Object3D();
+      cameraHolder.position.set(0, 1.5, 0);
+      player.add(cameraHolder);
 
-        // Ground
-        const groundGeometry = new THREE.PlaneGeometry(2000, 2000);
-        const groundMaterial = new THREE.MeshBasicMaterial({ color: 0x228B22, side: THREE.DoubleSide });
-        const ground = new THREE.Mesh(groundGeometry, groundMaterial);
-        ground.rotation.x = -Math.PI / 2;
-        scene.add(ground);
+      mainCamera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+      cameraHolder.add(mainCamera);
 
-        // Create player object (controls left/right rotation)
-        player = new THREE.Object3D();
-        player.position.set(0, 2, 200);
-        scene.add(player);
+      // Aerial camera
+      aerialCamera = new THREE.OrthographicCamera(window.innerWidth / -2, window.innerWidth / 2, window.innerHeight / 2, window.innerHeight / -2, 0.1, 5000);
+      aerialCamera.position.set(0, 1000, 0);
+      aerialCamera.lookAt(0, 0, 0);
 
-        // Create camera holder (for up/down look rotation)
-        cameraHolder = new THREE.Object3D();
-        cameraHolder.position.set(0, 1.5, 0); // Move camera above player
-        player.add(cameraHolder);
+      // Create player marker for aerial view
+      const markerGeometry = new THREE.BoxGeometry(10, 10, 10);
+      const markerMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+      playerMarker = new THREE.Mesh(markerGeometry, markerMaterial);
+      playerMarker.position.set(player.position.x, 5, player.position.z);
+      scene.add(playerMarker);
 
-        // Create camera and attach it to the camera holder
-        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
-        cameraHolder.add(camera);
+      // Create ground with satellite imagery
+      createSatelliteGround();
 
-        document.addEventListener("keydown", (e) => { keys[e.key] = true; });
-        document.addEventListener("keyup", (e) => { keys[e.key] = false; });
+      document.addEventListener("keydown", (e) => (keys[e.key] = true));
+      document.addEventListener("keyup", (e) => (keys[e.key] = false));
 
-        loadOSMBuildings();
-        animate();
+      document.getElementById("toggleView").addEventListener("click", toggleView);
+
+      loadBuildings();
+      animate();
     }
 
-    async function loadOSMBuildings() {
-        const url = 'https://overpass-api.de/api/interpreter?data=[out:json];way[building](around:500,51.5074,-0.1278);out body;node(w);out;';
-        const response = await fetch(url);
-        const data = await response.json();
+    function toggleView() {
+      isAerialView = !isAerialView;
+      if (isAerialView) {
+        document.getElementById("toggleView").innerText = "Switch to First-Person View";
+      } else {
+        document.getElementById("toggleView").innerText = "Switch to Aerial View";
+      }
+    }
 
-        const nodes = {};
-        data.elements.forEach(el => {
-            if (el.type === "node") {
-                nodes[el.id] = { lat: el.lat, lon: el.lon };
+    function createSatelliteGround() {
+      const groundGeometry = new THREE.PlaneGeometry(5000, 5000);
+      const groundMaterial = new THREE.MeshBasicMaterial({ color: 0x228B22, side: THREE.DoubleSide });
+      ground = new THREE.Mesh(groundGeometry, groundMaterial);
+      ground.rotation.x = -Math.PI / 2;
+      scene.add(ground);
+    }
+
+    async function loadBuildings() {
+      let chunkKey = `${Math.floor(playerLat / chunkSize)},${Math.floor(playerLon / chunkSize)}`;
+      if (loadedChunks.has(chunkKey)) return;
+      loadedChunks.add(chunkKey);
+
+      console.log("Loading buildings for chunk:", chunkKey);
+
+      let url = `https://overpass-api.de/api/interpreter?data=[out:json];way[building](around:500,${playerLat},${playerLon});out body;node(w);out;`;
+      let response = await fetch(url);
+      let data = await response.json();
+
+      const nodes = {};
+      data.elements.forEach(el => {
+        if (el.type === "node") nodes[el.id] = { lat: el.lat, lon: el.lon };
+      });
+
+      let scale = 100000;
+      data.elements.forEach(el => {
+        if (el.type === "way" && el.nodes) {
+          const shape = new THREE.Shape();
+          let first = true;
+          el.nodes.forEach(nodeId => {
+            if (nodes[nodeId]) {
+              let x = (nodes[nodeId].lon - playerLon) * scale;
+              let z = (nodes[nodeId].lat - playerLat) * scale;
+              if (first) {
+                shape.moveTo(x, z);
+                first = false;
+              } else {
+                shape.lineTo(x, z);
+              }
             }
-        });
+          });
 
-        const scale = 100000;
-        const baseLat = 51.5074;
-        const baseLon = -0.1278;
+          let height = Math.random() * 47 + 3;
+          let extrudeSettings = { depth: height, bevelEnabled: false };
+          let geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
 
-        data.elements.forEach(element => {
-            if (element.type === "way" && element.nodes) {
-                const shape = new THREE.Shape();
-                let first = true;
+          let material = new THREE.MeshBasicMaterial({ color: 0xffffff });
+          let edgeMaterial = new THREE.LineBasicMaterial({ color: 0x000000 });
 
-                element.nodes.forEach(nodeId => {
-                    if (nodes[nodeId]) {
-                        const x = (nodes[nodeId].lon - baseLon) * scale;
-                        const z = (nodes[nodeId].lat - baseLat) * scale;
-                        if (first) {
-                            shape.moveTo(x, z);
-                            first = false;
-                        } else {
-                            shape.lineTo(x, z);
-                        }
-                    }
-                });
+          let mesh = new THREE.Mesh(geometry, material);
+          mesh.rotation.x = -Math.PI / 2;
+          mesh.position.y = 0;
+          scene.add(mesh);
+          buildings[chunkKey] = mesh;
 
-                const height = Math.random() * 47 + 3;
-                const extrudeSettings = { depth: height, bevelEnabled: false };
-                const geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
-
-                const material = new THREE.MeshBasicMaterial({ color: 0xffffff });
-                const edgeMaterial = new THREE.LineBasicMaterial({ color: 0x000000 });
-
-                const mesh = new THREE.Mesh(geometry, material);
-                mesh.rotation.x = -Math.PI / 2;
-                mesh.position.y = 0;
-                scene.add(mesh);
-
-                const edges = new THREE.EdgesGeometry(geometry);
-                const edgeLines = new THREE.LineSegments(edges, edgeMaterial);
-                edgeLines.rotation.x = -Math.PI / 2;
-                edgeLines.position.y = 0;
-                scene.add(edgeLines);
-            }
-        });
+          let edges = new THREE.EdgesGeometry(geometry);
+          let edgeLines = new THREE.LineSegments(edges, edgeMaterial);
+          edgeLines.rotation.x = -Math.PI / 2;
+          edgeLines.position.y = 0;
+          scene.add(edgeLines);
+        }
+      });
     }
 
     function animate() {
-        requestAnimationFrame(animate);
+      requestAnimationFrame(animate);
 
-        // WASD Movement moves the player
-        if (keys["w"]) {
-            player.position.x -= Math.sin(player.rotation.y) * moveSpeed;
-            player.position.z -= Math.cos(player.rotation.y) * moveSpeed;
-        }
-        if (keys["s"]) {
-            player.position.x += Math.sin(player.rotation.y) * moveSpeed;
-            player.position.z += Math.cos(player.rotation.y) * moveSpeed;
-        }
-        if (keys["a"]) {
-            player.position.x -= Math.cos(player.rotation.y) * moveSpeed;
-            player.position.z += Math.sin(player.rotation.y) * moveSpeed;
-        }
-        if (keys["d"]) {
-            player.position.x += Math.cos(player.rotation.y) * moveSpeed;
-            player.position.z -= Math.sin(player.rotation.y) * moveSpeed;
-        }
+      if (!isAerialView) {
+        let moveX = 0, moveZ = 0;
+        if (keys["w"]) moveZ -= moveSpeed;
+        if (keys["s"]) moveZ += moveSpeed;
+        if (keys["a"]) moveX -= moveSpeed;
+        if (keys["d"]) moveX += moveSpeed;
 
-        // Left/Right arrows rotate the player (Yaw)
+        let yaw = player.rotation.y;
+        player.position.x += Math.cos(yaw) * moveX + Math.sin(yaw) * moveZ;
+        player.position.z += Math.sin(yaw) * moveX - Math.cos(yaw) * moveZ;
+
         if (keys["ArrowLeft"]) player.rotation.y += rotateSpeed;
         if (keys["ArrowRight"]) player.rotation.y -= rotateSpeed;
+      }
 
-        // Up/Down arrows rotate the camera holder (Pitch)
-        const maxLookUp = Math.PI / 3;  
-        const maxLookDown = -Math.PI / 3;  
-        if (keys["ArrowUp"]) {
-            cameraHolder.rotation.x = Math.max(cameraHolder.rotation.x - lookSpeed, maxLookDown);
-        }
-        if (keys["ArrowDown"]) {
-            cameraHolder.rotation.x = Math.min(cameraHolder.rotation.x + lookSpeed, maxLookUp);
-        }
+      playerMarker.position.set(player.position.x, 5, player.position.z);
+      ground.position.set(player.position.x, 0, player.position.z);
 
-        // Keep player at 2m height
-        player.position.y = 2;
-
-        // Update compass rotation based on player yaw
-        document.getElementById("compass").style.transform = `rotate(${player.rotation.y}rad)`;
-
-        renderer.render(scene, cameraHolder.children[0]); // Render from camera
-    }
-
-    function toggleMap() {
-        let map = document.getElementById("map");
-        map.style.display = map.style.display === "none" ? "block" : "none";
-    }
-
-    function toggleCollision() {
-        collisionEnabled = !collisionEnabled;
-        alert("Collision is now " + (collisionEnabled ? "ON" : "OFF"));
+      renderer.render(scene, isAerialView ? aerialCamera : mainCamera);
     }
   </script>
 </body>
