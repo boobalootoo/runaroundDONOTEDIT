@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>3D OSM Explorer with Aerial View</title>
+  <title>3D OSM Explorer - Fixed Controls & Persistent Buildings</title>
   <style>
     body { margin: 0; overflow: hidden; font-family: Arial, sans-serif; }
     canvas { display: block; }
@@ -28,12 +28,13 @@
     document.head.appendChild(script);
 
     let scene, renderer, player, cameraHolder, ground, playerMarker, isAerialView = false;
-    let buildings = {}, loadedChunks = new Set();
-    let moveSpeed = 0.0002, rotateSpeed = 0.05, lookSpeed = 0.05;
-    let playerLat = 51.5074, playerLon = -0.1278, chunkSize = 0.0025; // ~250m per chunk
-    let keys = {}, lastPlayerLat = playerLat, lastPlayerLon = playerLon;
-    let zoomLevel = 15; // Tile zoom level
-    let aerialCamera, mainCamera;
+    let moveSpeed = 0.3, rotateSpeed = 0.05, lookSpeed = 0.02, aerialSpeed = 10, zoomSpeed = 50;
+    let keys = {};
+    let playerLat = 51.5074, playerLon = -0.1278;
+    let aerialCamera, mainCamera, aerialZoom = 1000;
+    let pitch = 0, aerialX = 0, aerialZ = 0;
+    let buildings = {}; // Stores buildings to keep them persistent
+    let loadedChunks = new Set(); // Keeps track of loaded areas
 
     function init() {
       scene = new THREE.Scene();
@@ -56,8 +57,7 @@
 
       // Aerial camera
       aerialCamera = new THREE.OrthographicCamera(window.innerWidth / -2, window.innerWidth / 2, window.innerHeight / 2, window.innerHeight / -2, 0.1, 5000);
-      aerialCamera.position.set(0, 1000, 0);
-      aerialCamera.lookAt(0, 0, 0);
+      resetAerialCamera();
 
       // Create player marker for aerial view
       const markerGeometry = new THREE.BoxGeometry(10, 10, 10);
@@ -66,7 +66,7 @@
       playerMarker.position.set(player.position.x, 5, player.position.z);
       scene.add(playerMarker);
 
-      // Create ground with satellite imagery
+      // Create ground
       createSatelliteGround();
 
       document.addEventListener("keydown", (e) => (keys[e.key] = true));
@@ -74,17 +74,21 @@
 
       document.getElementById("toggleView").addEventListener("click", toggleView);
 
+      // Load buildings initially
       loadBuildings();
+
       animate();
     }
 
     function toggleView() {
       isAerialView = !isAerialView;
-      if (isAerialView) {
-        document.getElementById("toggleView").innerText = "Switch to First-Person View";
-      } else {
-        document.getElementById("toggleView").innerText = "Switch to Aerial View";
-      }
+      document.getElementById("toggleView").innerText = isAerialView ? "Switch to First-Person View" : "Switch to Aerial View";
+      if (isAerialView) resetAerialCamera();
+    }
+
+    function resetAerialCamera() {
+      aerialCamera.position.set(aerialX, aerialZoom, aerialZ);
+      aerialCamera.lookAt(aerialX, 0, aerialZ);
     }
 
     function createSatelliteGround() {
@@ -96,11 +100,11 @@
     }
 
     async function loadBuildings() {
-      let chunkKey = `${Math.floor(playerLat / chunkSize)},${Math.floor(playerLon / chunkSize)}`;
-      if (loadedChunks.has(chunkKey)) return;
+      let chunkKey = `${Math.floor(playerLat)},${Math.floor(playerLon)}`;
+      if (loadedChunks.has(chunkKey)) return; // Prevent reloading
       loadedChunks.add(chunkKey);
 
-      console.log("Loading buildings for chunk:", chunkKey);
+      console.log("Loading buildings...");
 
       let url = `https://overpass-api.de/api/interpreter?data=[out:json];way[building](around:500,${playerLat},${playerLon});out body;node(w);out;`;
       let response = await fetch(url);
@@ -134,27 +138,38 @@
           let geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
 
           let material = new THREE.MeshBasicMaterial({ color: 0xffffff });
-          let edgeMaterial = new THREE.LineBasicMaterial({ color: 0x000000 });
-
           let mesh = new THREE.Mesh(geometry, material);
           mesh.rotation.x = -Math.PI / 2;
-          mesh.position.y = 0;
           scene.add(mesh);
-          buildings[chunkKey] = mesh;
 
+          // Create black outlines
           let edges = new THREE.EdgesGeometry(geometry);
-          let edgeLines = new THREE.LineSegments(edges, edgeMaterial);
-          edgeLines.rotation.x = -Math.PI / 2;
-          edgeLines.position.y = 0;
-          scene.add(edgeLines);
+          let edgeMaterial = new THREE.LineBasicMaterial({ color: 0x000000 });
+          let edgeMesh = new THREE.LineSegments(edges, edgeMaterial);
+          edgeMesh.rotation.x = -Math.PI / 2;
+          scene.add(edgeMesh);
+
+          buildings[chunkKey] = { mesh, edgeMesh };
         }
       });
+
+      console.log("Buildings loaded.");
     }
 
     function animate() {
       requestAnimationFrame(animate);
 
-      if (!isAerialView) {
+      if (isAerialView) {
+        if (keys["w"]) aerialZ -= aerialSpeed;
+        if (keys["s"]) aerialZ += aerialSpeed;
+        if (keys["a"]) aerialX -= aerialSpeed;
+        if (keys["d"]) aerialX += aerialSpeed;
+        if (keys["q"]) aerialZoom -= zoomSpeed;
+        if (keys["e"]) aerialZoom += zoomSpeed;
+        aerialZoom = Math.max(500, Math.min(3000, aerialZoom));
+        aerialCamera.position.set(aerialX, aerialZoom, aerialZ);
+        aerialCamera.lookAt(aerialX, 0, aerialZ);
+      } else {
         let moveX = 0, moveZ = 0;
         if (keys["w"]) moveZ -= moveSpeed;
         if (keys["s"]) moveZ += moveSpeed;
@@ -167,11 +182,14 @@
 
         if (keys["ArrowLeft"]) player.rotation.y += rotateSpeed;
         if (keys["ArrowRight"]) player.rotation.y -= rotateSpeed;
+        if (keys["ArrowUp"]) pitch -= lookSpeed;
+        if (keys["ArrowDown"]) pitch += lookSpeed;
+
+        pitch = Math.max(-Math.PI / 4, Math.min(Math.PI / 4, pitch));
+        cameraHolder.rotation.x = pitch;
       }
 
       playerMarker.position.set(player.position.x, 5, player.position.z);
-      ground.position.set(player.position.x, 0, player.position.z);
-
       renderer.render(scene, isAerialView ? aerialCamera : mainCamera);
     }
   </script>
