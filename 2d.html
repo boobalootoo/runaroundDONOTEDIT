@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>3D OSM Explorer - Aerial View</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: Arial, sans-serif; }
+        canvas { display: block; }
+        #toggleView {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            padding: 10px 20px;
+            font-size: 16px;
+            background: white;
+            border: 1px solid black;
+            cursor: pointer;
+        }
+    </style>
+</head>
+<body>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
+    <script>
+        let scene, renderer, aerialCamera, playerMarker;
+        let aerialSpeed = 10, zoomSpeed = 50;
+        let keys = {};
+        let playerLat = 51.5074, playerLon = -0.1278; // Initial coordinates
+        let aerialX = 0, aerialZ = 0, aerialZoom = 1000;
+        let buildings = {}; // Stores buildings to keep them persistent
+        let loadedChunks = new Set();
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB); // Sky blue background
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+            // Setup orthographic camera for aerial view
+            aerialCamera = new THREE.OrthographicCamera(
+                window.innerWidth / -2, window.innerWidth / 2,
+                window.innerHeight / 2, window.innerHeight / -2,
+                0.1, 5000
+            );
+            resetAerialCamera(); // Initial camera position
+
+            // Create player marker (red box)
+            const markerGeometry = new THREE.BoxGeometry(10, 10, 10);
+            const markerMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+            playerMarker = new THREE.Mesh(markerGeometry, markerMaterial);
+            playerMarker.position.set(aerialX, 5, aerialZ); // Start at 0,0
+            scene.add(playerMarker);
+
+            // Create ground
+            createSatelliteGround();
+
+            document.addEventListener("keydown", (e) => (keys[e.key] = true));
+            document.addEventListener("keyup", (e) => (keys[e.key] = false));
+            window.addEventListener('resize', onWindowResize, false);
+
+            loadBuildings(); // Load buildings at initial location
+            animate();
+        }
+
+        function onWindowResize() {
+            aerialCamera.left = window.innerWidth / -2;
+            aerialCamera.right = window.innerWidth / 2;
+            aerialCamera.top = window.innerHeight / 2;
+            aerialCamera.bottom = window.innerHeight / -2;
+            aerialCamera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function resetAerialCamera() {
+            aerialCamera.position.set(aerialX, aerialZoom, aerialZ);
+            aerialCamera.lookAt(aerialX, 0, aerialZ);
+        }
+
+        function createSatelliteGround() {
+            const groundGeometry = new THREE.PlaneGeometry(5000, 5000);
+            const groundMaterial = new THREE.MeshBasicMaterial({ color: 0x228B22, side: THREE.DoubleSide }); // Green ground
+            ground = new THREE.Mesh(groundGeometry, groundMaterial);
+            ground.rotation.x = -Math.PI / 2;
+            scene.add(ground);
+        }
+
+        async function loadBuildings() {
+            let chunkKey = `${Math.floor(playerLat)},${Math.floor(playerLon)}`;
+            if (loadedChunks.has(chunkKey)) return;
+            loadedChunks.add(chunkKey);
+
+            console.log("Loading buildings...");
+            let url = `https://overpass-api.de/api/interpreter?data=[out:json];way[building](around:500,${playerLat},${playerLon});out body;node(w);out;`;
+            let response = await fetch(url);
+            let data = await response.json();
+
+            const nodes = {};
+            data.elements.forEach(el => {
+                if (el.type === "node") {
+                    nodes[el.id] = { lat: el.lat, lon: el.lon };
+                }
+            });
+
+            let scale = 100000; // Adjust for better scaling
+            data.elements.forEach(el => {
+                if (el.type === "way" && el.nodes) {
+                    const shape = new THREE.Shape();
+                    let first = true;
+                    el.nodes.forEach(nodeId => {
+                        if (nodes[nodeId]) {
+                            let x = (nodes[nodeId].lon - playerLon) * scale;
+                            let z = (nodes[nodeId].lat - playerLat) * scale;
+                            if (first) {
+                                shape.moveTo(x, z);
+                                first = false;
+                            } else {
+                                shape.lineTo(x, z);
+                            }
+                        }
+                    });
+
+                    let height = Math.random() * 47 + 3;  // Random height
+                    let extrudeSettings = { depth: height, bevelEnabled: false };
+                    let geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+                    let material = new THREE.MeshBasicMaterial({ color: 0xffffff }); // White buildings
+                    let mesh = new THREE.Mesh(geometry, material);
+                    mesh.rotation.x = -Math.PI / 2;
+                    scene.add(mesh);
+
+                     // Create black outlines
+                    let edges = new THREE.EdgesGeometry(geometry);
+                    let edgeMaterial = new THREE.LineBasicMaterial({ color: 0x000000 });
+                    let edgeMesh = new THREE.LineSegments(edges, edgeMaterial);
+                    edgeMesh.rotation.x = -Math.PI / 2;
+                    scene.add(edgeMesh);
+
+                    buildings[chunkKey] = { mesh, edgeMesh }; // Store for persistence
+                }
+            });
+            console.log("Buildings loaded.");
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Aerial view controls
+            if (keys["w"]) aerialZ -= aerialSpeed;
+            if (keys["s"]) aerialZ += aerialSpeed;
+            if (keys["a"]) aerialX -= aerialSpeed;
+            if (keys["d"]) aerialX += aerialSpeed;
+            if (keys["q"]) aerialZoom -= zoomSpeed;
+            if (keys["e"]) aerialZoom += zoomSpeed;
+
+            aerialZoom = Math.max(500, Math.min(3000, aerialZoom)); // Clamp zoom
+            aerialCamera.position.set(aerialX, aerialZoom, aerialZ);
+            aerialCamera.lookAt(aerialX, 0, aerialZ);
+
+            playerMarker.position.set(aerialX, 5, aerialZ); // Update marker position
+            renderer.render(scene, aerialCamera);
+        }
+
+        // Start the application
+        init();
+    </script>
+</body>
+</html>
