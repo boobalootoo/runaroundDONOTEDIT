@@ -7,7 +7,7 @@
     <style>
         body { margin: 0; overflow: hidden; font-family: Arial, sans-serif; }
         canvas { display: block; }
-        #toggleView {
+        #useLocation {
             position: absolute;
             top: 10px;
             left: 10px;
@@ -16,50 +16,55 @@
             background: white;
             border: 1px solid black;
             cursor: pointer;
+            z-index: 10;
         }
     </style>
 </head>
 <body>
+    <button id="useLocation">Use Location</button>
     <script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
     <script>
         let scene, renderer, aerialCamera, playerMarker;
         let aerialSpeed = 10, zoomSpeed = 50;
         let keys = {};
-        let playerLat = 51.5074, playerLon = -0.1278; // Initial coordinates
+        let playerLat = 51.5074, playerLon = -0.1278; // Initial coordinates, London
         let aerialX = 0, aerialZ = 0, aerialZoom = 1000;
-        let buildings = {}; // Stores buildings to keep them persistent
+        let buildings = {}; // Stores buildings, now by OSM ID
         let loadedChunks = new Set();
+        const viewDistance = 2000; // Increased view distance
+        let previousCameraPosition = new THREE.Vector3(); // Store previous camera position
 
         function init() {
             scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x87CEEB); // Sky blue background
+            scene.background = new THREE.Color(0x87CEEB);
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
             document.body.appendChild(renderer.domElement);
 
-            // Setup orthographic camera for aerial view
             aerialCamera = new THREE.OrthographicCamera(
                 window.innerWidth / -2, window.innerWidth / 2,
                 window.innerHeight / 2, window.innerHeight / -2,
                 0.1, 5000
             );
-            resetAerialCamera(); // Initial camera position
+            resetAerialCamera();
+            previousCameraPosition.copy(aerialCamera.position); // Initialize previous position
 
-            // Create player marker (red box)
             const markerGeometry = new THREE.BoxGeometry(10, 10, 10);
             const markerMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
             playerMarker = new THREE.Mesh(markerGeometry, markerMaterial);
-            playerMarker.position.set(aerialX, 5, aerialZ); // Start at 0,0
+            playerMarker.position.set(aerialX, 5, aerialZ);
             scene.add(playerMarker);
 
-            // Create ground
             createSatelliteGround();
 
             document.addEventListener("keydown", (e) => (keys[e.key] = true));
             document.addEventListener("keyup", (e) => (keys[e.key] = false));
             window.addEventListener('resize', onWindowResize, false);
 
-            loadBuildings(); // Load buildings at initial location
+            // Add event listener to the button
+            document.getElementById("useLocation").addEventListener("click", useLocation);
+
+            loadBuildings();
             animate();
         }
 
@@ -79,7 +84,7 @@
 
         function createSatelliteGround() {
             const groundGeometry = new THREE.PlaneGeometry(5000, 5000);
-            const groundMaterial = new THREE.MeshBasicMaterial({ color: 0x228B22, side: THREE.DoubleSide }); // Green ground
+            const groundMaterial = new THREE.MeshBasicMaterial({ color: 0x228B22, side: THREE.DoubleSide });
             ground = new THREE.Mesh(groundGeometry, groundMaterial);
             ground.rotation.x = -Math.PI / 2;
             scene.add(ground);
@@ -102,15 +107,20 @@
                 }
             });
 
-            let scale = 100000; // Adjust for better scaling
+            let scale = 100000;
             data.elements.forEach(el => {
                 if (el.type === "way" && el.nodes) {
                     const shape = new THREE.Shape();
                     let first = true;
+                    let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity; // For bounding box
                     el.nodes.forEach(nodeId => {
                         if (nodes[nodeId]) {
                             let x = (nodes[nodeId].lon - playerLon) * scale;
                             let z = (nodes[nodeId].lat - playerLat) * scale;
+                            minX = Math.min(minX, x);
+                            minZ = Math.min(minZ, z);
+                            maxX = Math.max(maxX, x);
+                            maxZ = Math.max(maxZ, z);
                             if (first) {
                                 shape.moveTo(x, z);
                                 first = false;
@@ -120,22 +130,31 @@
                         }
                     });
 
-                    let height = Math.random() * 47 + 3;  // Random height
+                    let height = Math.random() * 47 + 3;
                     let extrudeSettings = { depth: height, bevelEnabled: false };
                     let geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
-                    let material = new THREE.MeshBasicMaterial({ color: 0xffffff }); // White buildings
+                    let material = new THREE.MeshBasicMaterial({ color: 0xffffff });
                     let mesh = new THREE.Mesh(geometry, material);
                     mesh.rotation.x = -Math.PI / 2;
                     scene.add(mesh);
 
-                     // Create black outlines
                     let edges = new THREE.EdgesGeometry(geometry);
                     let edgeMaterial = new THREE.LineBasicMaterial({ color: 0x000000 });
                     let edgeMesh = new THREE.LineSegments(edges, edgeMaterial);
                     edgeMesh.rotation.x = -Math.PI / 2;
                     scene.add(edgeMesh);
 
-                    buildings[chunkKey] = { mesh, edgeMesh }; // Store for persistence
+                    const buildingId = el.id; // Use OSM ID as key
+                    buildings[buildingId] = {
+                        mesh: mesh,
+                        edgeMesh: edgeMesh,
+                        minX: minX,
+                        minZ: minZ,
+                        maxX: maxX,
+                        maxZ: maxZ,
+                        lat: playerLat,  // Store for coordinate lock.  Important.
+                        lon: playerLon
+                    };
                 }
             });
             console.log("Buildings loaded.");
@@ -144,7 +163,6 @@
         function animate() {
             requestAnimationFrame(animate);
 
-            // Aerial view controls
             if (keys["w"]) aerialZ -= aerialSpeed;
             if (keys["s"]) aerialZ += aerialSpeed;
             if (keys["a"]) aerialX -= aerialSpeed;
@@ -152,12 +170,109 @@
             if (keys["q"]) aerialZoom -= zoomSpeed;
             if (keys["e"]) aerialZoom += zoomSpeed;
 
-            aerialZoom = Math.max(500, Math.min(3000, aerialZoom)); // Clamp zoom
+            aerialZoom = Math.max(500, Math.min(3000, aerialZoom));
             aerialCamera.position.set(aerialX, aerialZoom, aerialZ);
             aerialCamera.lookAt(aerialX, 0, aerialZ);
+            playerMarker.position.set(aerialX, 5, aerialZ);
 
-            playerMarker.position.set(aerialX, 5, aerialZ); // Update marker position
+            removeBuildingsOutsideViewport(); // Remove buildings outside view
+
+            // Check for significant camera movement
+            const distanceMoved = aerialCamera.position.distanceTo(previousCameraPosition);
+            if (distanceMoved > 500) { // Adjust threshold as needed
+                clearBuildings();        // Clear buildings
+                loadBuildings();       // Reload
+                previousCameraPosition.copy(aerialCamera.position); // Update
+            }
+
             renderer.render(scene, aerialCamera);
+        }
+
+        function removeBuildingsOutsideViewport() {
+            const frustum = new THREE.Frustum();
+            const matrix = new THREE.Matrix4();
+            aerialCamera.updateMatrixWorld();
+            matrix.multiplyMatrices(aerialCamera.projectionMatrix, aerialCamera.matrixWorldInverse);
+            frustum.setFromProjectionMatrix(matrix);
+
+            for (let id in buildings) {
+                const building = buildings[id];
+                if (building) {
+                    // Create a bounding box for the building
+                    const min = new THREE.Vector3(building.minX, -10, building.minZ);
+                    const max = new THREE.Vector3(building.maxX, building.mesh.geometry.parameters.depth + 10, building.maxZ); // Use actual height
+                    const boundingBox = new THREE.Box3(min, max);
+
+                    if (!frustum.intersectsBox(boundingBox)) {
+                        // Remove from scene
+                        if (building.mesh) scene.remove(building.mesh);
+                        if (building.edgeMesh) scene.remove(building.edgeMesh);
+                        delete buildings[id]; // Remove from storage
+                    }
+                }
+            }
+        }
+
+        function clearBuildings() {
+            for (let id in buildings) {
+                const building = buildings[id];
+                if (building.mesh) {
+                    scene.remove(building.mesh);
+                }
+                if (building.edgeMesh) {
+                    scene.remove(building.edgeMesh);
+                }
+            }
+            buildings = {};
+            loadedChunks.clear();
+        }
+
+        function useLocation() {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        const newLat = position.coords.latitude;
+                        const newLon = position.coords.longitude;
+
+                        // Check if the location has actually changed significantly
+                        const distance = haversine(playerLat, playerLon, newLat, newLon);
+                        if (distance > 100) { // 100 meters threshold, adjust as needed.
+                            playerLat = newLat;
+                            playerLon = newLon;
+                            aerialX = 0;
+                            aerialZ = 0;
+                            loadedChunks.clear();
+                            clearBuildings();
+                            resetAerialCamera();
+                            loadBuildings();
+                            previousCameraPosition.copy(aerialCamera.position);
+                        } else {
+                            alert("Location not changed significantly.  Not reloading.");
+                        }
+                    },
+                    (error) => {
+                        alert("Error getting location: " + error.message);
+                        console.error("Error getting location:", error);
+                    }
+                );
+            } else {
+                alert("Geolocation is not supported by this browser.");
+            }
+        }
+
+        // Haversine distance formula (in meters)
+        function haversine(lat1, lon1, lat2, lon2) {
+            const R = 6371e3; // Radius of earth in km
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a =
+                Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2)
+            ;
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            const d = R * c; // Distance in meters
+            return d;
         }
 
         // Start the application
