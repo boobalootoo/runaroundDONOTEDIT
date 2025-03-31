@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>3D OSM Explorer</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: Arial, sans-serif; }
+        canvas { display: block; }
+        #joystick-left, #joystick-right {
+            position: absolute;
+            bottom: 20px;
+            width: 100px;
+            height: 100px;
+            border-radius: 50%;
+            background-color: rgba(100, 100, 100, 0.5);
+            cursor: pointer;
+            display: block;
+        }
+        #joystick-left { left: 20px; }
+        #joystick-right { right: 20px; }
+
+        #joystick-left-center, #joystick-right-center {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            background-color: rgba(200, 200, 200, 0.7);
+        }
+
+        /* Add styling for the labels */
+        .direction-label {
+            position: absolute;
+            color: white;
+            font-size: 12px;
+            font-family: Arial, sans-serif;
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8);
+        }
+
+        #north-label { top: 10px; left: 50%; transform: translateX(-50%); }
+        #south-label { bottom: 10px; left: 50%; transform: translateX(-50%); }
+        #east-label { right: 10px; top: 50%; transform: translateY(-50%); }
+        #west-label { left: 10px; top: 50%; transform: translateY(-50%); }
+
+        /* Compass Styles */
+        #compass {
+            position: absolute;
+            bottom: 140px; /* Adjust as necessary to position above joysticks */
+            left: 50%;
+            transform: translateX(-50%);
+            width: 80px; /* Make it smaller */
+            height: 80px;
+            border-radius: 50%;
+            background-color: rgba(100, 100, 100, 0.7); /* More transparent */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-size: 18px; /* Smaller font size */
+            font-family: Arial, sans-serif;
+            z-index: 10;
+            pointer-events: none; /* Important: Make it non-interactive */
+            box-shadow: 0 0 5px rgba(255, 255, 255, 0.5); /* Subtle shadow */
+        }
+
+        #compass-direction {
+            position: absolute;
+            width: 10px;
+            height: 10px;
+            background-color: white;
+            border-radius: 50%;
+            top: 0;
+            left: 50%;
+            transform: translateX(-50%);
+            animation: pulse 2s infinite; /* Add a subtle pulse animation */
+        }
+
+        @keyframes pulse {
+            0% { transform: translateX(-50%) scale(1); }
+            50% { transform: translateX(-50%) scale(1.2); }
+            100% { transform: translateX(-50%) scale(1); }
+        }
+
+        .compass-label {
+            position: absolute;
+            color: white;
+            font-size: 12px;
+            font-family: Arial, sans-serif;
+            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8);
+        }
+
+        #compass-n { top: -10px; left: 50%; transform: translateX(-50%); }
+        #compass-s { bottom: -10px; left: 50%; transform: translateX(-50%); }
+        #compass-e { right: -10px; top: 50%; transform: translateY(-50%); }
+        #compass-w { left: -10px; top: 50%; transform: translateY(-50%); }
+
+
+    </style>
+</head>
+<body>
+    <canvas id="threeCanvas"></canvas>
+    <div id="joystick-left">
+        <div id="joystick-left-center"></div>
+        <div id="north-label" class="direction-label">N</div>
+        <div id="south-label" class="direction-label">S</div>
+        <div id="east-label" class="direction-label">E</div>
+        <div id="west-label" class="direction-label">W</div>
+    </div>
+    <div id="joystick-right">
+        <div id="joystick-right-center"></div>
+    </div>
+    <div id="compass">
+        <div id="compass-direction"></div>
+        <div id="compass-n" class="compass-label">N</div>
+        <div id="compass-s" class="compass-label">S</div>
+        <div id="compass-e" class="compass-label">E</div>
+        <div id="compass-w" class="compass-label">W</div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
+    <script>
+        let scene, renderer, player, cameraHolder, ground;
+        let moveSpeed = 0.3, rotateSpeed = 0.05, lookSpeed = 0.02;
+        let keys = {};
+        let playerLat = 51.5074, playerLon = -0.1278;
+        let mainCamera;
+        let pitch = 0;
+        let buildings = {};
+        let loadedChunks = new Set();
+
+        // Joystick variables
+        let joystickLeft = document.getElementById('joystick-left');
+        let joystickLeftCenter = document.getElementById('joystick-left-center');
+        let joystickRight = document.getElementById('joystick-right');
+        let joystickRightCenter = document.getElementById('joystick-right-center');
+
+        let joystickLeftActive = false;
+        let joystickRightActive = false;
+        let joystickLeftX = 0;
+        let joystickLeftY = 0;
+        let joystickRightX = 0;
+        let joystickRightY = 0;
+
+        let touchStartPointLeft = { x: 0, y: 0 };
+        let touchStartPointRight = { x: 0, y: 0 };
+        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
+        // Compass
+        let compass = document.getElementById('compass');
+
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x87CEEB);
+            renderer = new THREE.WebGLRenderer({ antialias: true, canvas: document.getElementById('threeCanvas') });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            //document.body.appendChild(renderer.domElement);
+
+            // Player setup
+            player = new THREE.Object3D();
+            player.position.set(0, 2, 0);
+            scene.add(player);
+
+            cameraHolder = new THREE.Object3D();
+            cameraHolder.position.set(0, 1.5, 0);
+            player.add(cameraHolder);
+
+            mainCamera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            cameraHolder.add(mainCamera);
+
+            // Create ground
+            createGround();
+
+            document.addEventListener("keydown", (e) => (keys[e.key] = true));
+            document.addEventListener("keyup", (e) => (keys[e.key] = false));
+            window.addEventListener('resize', onWindowResize, false);
+
+            // Joystick events for mobile
+            if (isMobile) {
+                joystickLeft.style.display = 'block';
+                joystickRight.style.display = 'block';
+
+                joystickLeft.addEventListener('touchstart', handleTouchStartLeft);
+                joystickLeft.addEventListener('touchmove', handleTouchMoveLeft);
+                joystickLeft.addEventListener('touchend', handleTouchEndLeft);
+
+                joystickRight.addEventListener('touchstart', handleTouchStartRight);
+                joystickRight.addEventListener('touchmove', handleTouchMoveRight);
+                joystickRight.addEventListener('touchend', handleTouchEndRight);
+            }
+            else {
+                joystickLeft.style.display = 'block';
+                joystickRight.style.display = 'block';
+
+                joystickLeft.addEventListener('mousedown', handleTouchStartLeft);
+                joystickLeft.addEventListener('mousemove', handleTouchMoveLeft);
+                joystickLeft.addEventListener('mouseup', handleTouchEndLeft);
+
+                joystickRight.addEventListener('mousedown', handleTouchStartRight);
+                joystickRight.addEventListener('mousemove', handleTouchMoveRight);
+                joystickRight.addEventListener('mouseup', handleTouchEndRight);
+            }
+
+
+            loadInitialBuildings();
+            animate();
+        }
+
+        function onWindowResize() {
+            mainCamera.aspect = window.innerWidth / window.innerHeight;
+            mainCamera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function createGround() {
+            const groundGeometry = new THREE.PlaneGeometry(5000, 5000);
+            const groundMaterial = new THREE.MeshBasicMaterial({ color: 0x228B22, side: THREE.DoubleSide });
+            ground = new THREE.Mesh(groundGeometry, groundMaterial);
+            ground.rotation.x = -Math.PI / 2;
+            scene.add(ground);
+        }
+
+        async function loadBuildings() {
+            let chunkKey = `${Math.floor(playerLat)},${Math.floor(playerLon)}`;
+            if (loadedChunks.has(chunkKey)) return;
+            loadedChunks.add(chunkKey);
+
+            console.log("Loading buildings...");
+
+            let url = `https://overpass-api.de/api/interpreter?data=[out:json];way[building](around:500,${playerLat},${playerLon});out body;node(w);out;`;
+            let response = await fetch(url);
+            let data = await response.json();
+
+            const nodes = {};
+            data.elements.forEach(el => {
+                if (el.type === "node") nodes[el.id] = { lat: el.lat, lon: el.lon };
+            });
+
+            let scale = 100000;
+            data.elements.forEach(el => {
+                if (el.type === "way" && el.nodes) {
+                    const shape = new THREE.Shape();
+                    let first = true;
+                    el.nodes.forEach(nodeId => {
+                        if (nodes[nodeId]) {
+                            let x = (nodes[nodeId].lon - playerLon) * scale;
+                            let z = (nodes[nodeId].lat - playerLat) * scale;
+                            if (first) {
+                                shape.moveTo(x, z);
+                                first = false;
+                            } else {
+                                shape.lineTo(x, z);
+                            }
+                        }
+                    });
+
+                    let height = Math.random() * 47 + 3;
+                    let extrudeSettings = { depth: height, bevelEnabled: false };
+                    let geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+
+                    let material = new THREE.MeshBasicMaterial({ color: 0xffffff });
+                    let mesh = new THREE.Mesh(geometry, material);
+                    mesh.rotation.x = -Math.PI / 2;
+                    scene.add(mesh);
+
+                    // Create black outlines
+                    let edges = new THREE.EdgesGeometry(geometry);
+                    let edgeMaterial = new THREE.LineBasicMaterial({ color: 0x000000 });
+                    let edgeMesh = new THREE.LineSegments(edges, edgeMaterial);
+                    edgeMesh.rotation.x = -Math.PI / 2;
+                    scene.add(edgeMesh);
+
+                    buildings[chunkKey] = { mesh, edgeMesh };
+                }
+            });
+
+            console.log("Buildings loaded.");
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            let moveX = 0, moveZ = 0;
+            if (keys["w"] || joystickLeftY < -0.2) moveZ -= moveSpeed;
+            if (keys["s"] || joystickLeftY > 0.2) moveZ += moveSpeed;
+            if (keys["a"] || joystickLeftX < -0.2) moveX -= moveSpeed;
+            if (keys["d"] || joystickLeftX > 0.2) moveX += moveSpeed;
+
+            //  Calculate the player's current yaw (rotation around the Y axis)
+            const yaw = player.rotation.y;
+
+            // Use cosine and sine to calculate forward and sideways movement relative to the player's direction
+            player.position.x += Math.cos(yaw) * moveZ + Math.cos(yaw + Math.PI / 2) * moveX;
+            player.position.z += Math.sin(yaw) * moveZ + Math.sin(yaw + Math.PI / 2) * moveX;
+
+
+            if (keys["ArrowLeft"] || joystickRightX < -0.2) player.rotation.y += rotateSpeed;
+            if (keys["ArrowRight"] || joystickRightX > 0.2) player.rotation.y -= rotateSpeed;
+            if (keys["ArrowUp"] || joystickRightY < -0.2) pitch -= lookSpeed;
+            if (keys["ArrowDown"] || joystickRightY > 0.2) pitch += lookSpeed;
+
+
+            pitch = Math.max(-Math.PI / 4, Math.min(Math.PI / 4, pitch));
+            cameraHolder.rotation.x = pitch;
+
+            renderer.render(scene, mainCamera);
+
+            // Update compass direction
+            updateCompass(yaw);
+        }
+
+        function useLocation() {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    async (position) => {
+                        playerLat = position.coords.latitude;
+                        playerLon = position.coords.longitude;
+
+                        // Clear existing buildings
+                        for (const key in buildings) {
+                            scene.remove(buildings[key].mesh);
+                            scene.remove(buildings[key].edgeMesh);
+                            delete buildings[key];
+                        }
+                        loadedChunks.clear();
+
+                        // Load buildings for the new location
+                        loadInitialBuildings();
+                    },
+                    (error) => {
+                        alert("Error getting location: " + error.message);
+                        console.error("Error getting location:", error);
+                    }
+                );
+            } else {
+                alert("Geolocation is not supported by this browser.");
+            }
+        }
+
+        // Add this event listener
+        window.onload = function () {
+            document.getElementById("useLocation").addEventListener("click", useLocation);
+        };
+
+        // Load initial content
+        function loadInitialBuildings() {
+            loadBuildings();
+        }
+
+        // Initialize
+        init();
+
+        // --- Joystick functions ---
+        function handleTouchStartLeft(e) {
+            e.preventDefault();
+            joystickLeftActive = true;
+            touchStartPointLeft = {
+                x: (e.touches) ? e.touches[0].clientX : e.clientX,
+                y: (e.touches) ? e.touches[0].clientY : e.clientY
+            };
+            joystickLeftCenter.style.backgroundColor = 'rgba(255, 255, 255, 0.9)';
+        }
+
+        function handleTouchMoveLeft(e) {
+            e.preventDefault();
+            if (!joystickLeftActive) return;
+
+            const touchX = (e.touches) ? e.touches[0].clientX : e.clientX;
+            const touchY = (e.touches) ? e.touches[0].clientY : e.clientY;
+            const deltaX = touchX - touchStartPointLeft.x;
+            const deltaY = touchY - touchStartPointLeft.y;
+
+            const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+            const angle = Math.atan2(deltaY, deltaX);
+
+            const maxDistance = 50;
+            if (distance > maxDistance) {
+                joystickLeftX = Math.cos(angle) * maxDistance / 50;
+                joystickLeftY = Math.sin(angle) * maxDistance / 50;
+            } else {
+                joystickLeftX = deltaX / 50;
+                joystickLeftY = deltaY / 50;
+            }
+
+            joystickLeftCenter.style.left = `calc(50% + ${joystickLeftX * 30}px)`;
+            joystickLeftCenter.style.top = `calc(50% + ${joystickLeftY * 30}px)`;
+        }
+
+        function handleTouchEndLeft(e) {
+            e.preventDefault();
+            joystickLeftActive = false;
+            joystickLeftX = 0;
+            joystickLeftY = 0;
+            joystickLeftCenter.style.left = '50%';
+            joystickLeftCenter.style.top = '50%';
+            joystickLeftCenter.style.backgroundColor = 'rgba(200, 200, 200, 0.7)';
+        }
+
+
+
+        function handleTouchStartRight(e) {
+            e.preventDefault();
+            joystickRightActive = true;
+            touchStartPointRight = {
+                x: (e.touches) ? e.touches[0].clientX : e.clientX,
+                y: (e.touches) ? e.touches[0].clientY : e.clientY
+            };
+            joystickRightCenter.style.backgroundColor = 'rgba(255, 255, 255, 0.9)';
+        }
+
+        function handleTouchMoveRight(e) {
+            e.preventDefault();
+            if (!joystickRightActive) return;
+
+            const touchX = (e.touches) ? e.touches[0].clientX : e.clientX;
+            const touchY = (e.touches) ? e.touches[0].clientY : e.clientY;
+            const deltaX = touchX - touchStartPointRight.x;
+            const deltaY = touchY - touchStartPointRight.y;
+
+            const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+            const angle = Math.atan2(deltaY, deltaX);
+
+            const maxDistance = 50;
+            if (distance > maxDistance) {
+                joystickRightX = Math.cos(angle) * maxDistance / 50;
+                joystickRightY = Math.sin(angle) * maxDistance / 50;
+            } else {
+                joystickRightX = deltaX / 50;
+                joystickRightY = deltaY / 50;
+            }
+
+            joystickRightCenter.style.left = `calc(50% + ${joystickRightX * 30}px)`;
+            joystickRightCenter.style.top = `calc(50% + ${joystickRightY * 30}px)`;
+        }
+
+        function handleTouchEndRight(e) {
+            e.preventDefault();
+            joystickRightActive = false;
+            joystickRightX = 0;
+            joystickRightY = 0;
+            joystickRightCenter.style.left = '50%';
+            joystickRightCenter.style.top = '50%';
+            joystickRightCenter.style.backgroundColor = 'rgba(200, 200, 200, 0.7)';
+        }
+
+        function updateCompass(yaw) {
+            let direction = 'N';
+            const angle = (yaw * 180 / Math.PI + 360) % 360; // Normalize angle to 0-360 range
+            
+            if (angle >= 337.5 || angle < 22.5) {
+                direction = 'N';
+            } else if (angle >= 22.5 && angle < 67.5) {
+                direction = 'NE';
+            } else if (angle >= 67.5 && angle < 112.5) {
+                direction = 'E';
+            } else if (angle >= 112.5 && angle < 157.5) {
+                direction = 'SE';
+            } else if (angle >= 157.5 && angle < 202.5) {
+                direction = 'S';
+            } else if (angle >= 202.5 && angle < 247.5) {
+                direction = 'SW';
+            } else if (angle >= 247.5 && angle < 292.5) {
+                direction = 'W';
+            } else if (angle >= 292.5 && angle < 337.5) {
+                direction = 'NW';
+            }
+            compass.textContent = direction;
+            // Rotate the compass needle.
+            document.getElementById('compass-direction').style.transform = `translateX(-50%) rotate(${yaw * 180 / Math.PI}deg)`;
+        }
+    </script>
+</body>
+</html>
