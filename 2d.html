@@ -5,13 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>3D OSM Explorer - Aerial View</title>
     <style>
-        body { 
-            margin: 0; 
-            overflow: hidden; 
-            font-family: Arial, sans-serif; 
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
         }
-        canvas { 
-            display: block; 
+        canvas {
+            display: block;
         }
 
         /* Button Styles */
@@ -39,40 +39,41 @@
 
         /* Individual Zoom Buttons */
         #zoomIn, #zoomOut {
-            padding: 10px 20px;
-            font-size: 16px;
+            padding: 15px 30px;
+            font-size: 24px;
             background: white;
-            border: 1px solid black;
+            border: 2px solid black;
             cursor: pointer;
+            transition: all 0.2s ease;
         }
 
         /* Hover Effect for Better UX */
         #zoomIn:hover, #zoomOut:hover {
             background-color: #f0f0f0;
+            transform: scale(1.1);
         }
     </style>
 </head>
 <body>
-    <!-- UI Elements -->
     <button id="useLocation">Use Location</button>
     <div class="zoom-controls">
-        <button id="zoomIn">+</button>
-        <button id="zoomOut">-</button>
+        <button id="zoomIn">-</button>
+        <button id="zoomOut">+</button>
     </div>
 
-    <!-- Three.js Script -->
     <script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
     <script>
-        // Global Variables
+       // Global Variables
         let scene, renderer, aerialCamera, playerMarker;
         let aerialSpeed = 10, zoomSpeed = 50;
         let keys = {};
         let playerLat = 51.5074, playerLon = -0.1278; // Initial coordinates, London
         let aerialX = 0, aerialZ = 0, aerialZoom = 1000;
         let buildings = {}; // Stores buildings, now by OSM ID
-        let loadedChunks = new Set();
-        const viewDistance = 2000; // Increased view distance
+        let loadedBuildings = new Set(); // Stores OSM IDs of loaded buildings
+        const viewDistance = 2000;
         let previousCameraPosition = new THREE.Vector3();
+        let osmData = { nodes: {}, ways: [] }; // Store OSM data
 
         // Initialization
         function init() {
@@ -111,18 +112,38 @@
 
             // Button Event Listeners
             document.getElementById("useLocation").addEventListener("click", useLocation);
-            document.getElementById("zoomIn").addEventListener("click", () => {
-                aerialZoom -= zoomSpeed;
-                aerialZoom = Math.max(500, Math.min(3000, aerialZoom));
-                resetAerialCamera();
+            
+            // Zoom In Button Events
+            document.getElementById("zoomIn").addEventListener("mousedown", () => {
+                keys["zoomIn"] = true;
             });
-            document.getElementById("zoomOut").addEventListener("click", () => {
-                aerialZoom += zoomSpeed;
-                aerialZoom = Math.max(500, Math.min(3000, aerialZoom));
-                resetAerialCamera();
+            document.getElementById("zoomIn").addEventListener("mouseup", () => {
+                keys["zoomIn"] = false;
+            });
+            document.getElementById("zoomIn").addEventListener("touchstart", (e) => {
+                e.preventDefault();
+                keys["zoomIn"] = true;
+            });
+            document.getElementById("zoomIn").addEventListener("touchend", () => {
+                keys["zoomIn"] = false;
             });
 
-            loadBuildings();
+            // Zoom Out Button Events
+            document.getElementById("zoomOut").addEventListener("mousedown", () => {
+                keys["zoomOut"] = true;
+            });
+            document.getElementById("zoomOut").addEventListener("mouseup", () => {
+                keys["zoomOut"] = false;
+            });
+            document.getElementById("zoomOut").addEventListener("touchstart", (e) => {
+                e.preventDefault();
+                keys["zoomOut"] = true;
+            });
+            document.getElementById("zoomOut").addEventListener("touchend", () => {
+                keys["zoomOut"] = false;
+            });
+
+            loadInitialBuildings(); // Load initial buildings
             animate();
         }
 
@@ -139,7 +160,7 @@
         // Camera Reset Function
         function resetAerialCamera() {
             // Calculate the zoom factor
-            const zoomFactor = 2000 / aerialZoom; // 2000 is the base view distance
+            const zoomFactor = 2000 / aerialZoom;
             
             // Update the camera's orthographic frustum
             aerialCamera.left = -window.innerWidth / 2 * zoomFactor;
@@ -162,81 +183,133 @@
             scene.add(ground);
         }
 
-        // Building Loading Function
-        async function loadBuildings() {
-            let chunkKey = `${Math.floor(playerLat)},${Math.floor(playerLon)}`;
-            if (loadedChunks.has(chunkKey)) return;
-            loadedChunks.add(chunkKey);
-
-            console.log("Loading buildings...");
-            let url = `https://overpass-api.de/api/interpreter?data=[out:json];way[building](around:500,${playerLat},${playerLon});out body;node(w);out;`;
-            let response = await fetch(url);
-            let data = await response.json();
-
-            const nodes = {};
-            data.elements.forEach(el => {
-                if (el.type === "node") {
-                    nodes[el.id] = { lat: el.lat, lon: el.lon };
-                }
-            });
-
-            let scale = 100000;
-            data.elements.forEach(el => {
-                if (el.type === "way" && el.nodes) {
-                    const shape = new THREE.Shape();
-                    let first = true;
-                    let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
-                    
-                    el.nodes.forEach(nodeId => {
-                        if (nodes[nodeId]) {
-                            let x = (nodes[nodeId].lon - playerLon) * scale;
-                            let z = (nodes[nodeId].lat - playerLat) * scale;
-                            minX = Math.min(minX, x);
-                            minZ = Math.min(minZ, z);
-                            maxX = Math.max(maxX, x);
-                            maxZ = Math.max(maxZ, z);
-                            
-                            if (first) {
-                                shape.moveTo(x, z);
-                                first = false;
-                            } else {
-                                shape.lineTo(x, z);
-                            }
-                        }
-                    });
-
-                    let height = Math.random() * 47 + 3;
-                    let extrudeSettings = { depth: height, bevelEnabled: false };
-                    let geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
-                    let material = new THREE.MeshBasicMaterial({ color: 0xffffff });
-                    let mesh = new THREE.Mesh(geometry, material);
-                    mesh.rotation.x = -Math.PI / 2;
-                    scene.add(mesh);
-
-                    let edges = new THREE.EdgesGeometry(geometry);
-                    let edgeMaterial = new THREE.LineBasicMaterial({ color: 0x000000 });
-                    let edgeMesh = new THREE.LineSegments(edges, edgeMaterial);
-                    edgeMesh.rotation.x = -Math.PI / 2;
-                    scene.add(edgeMesh);
-
-                    const buildingId = el.id;
-                    buildings[buildingId] = {
-                        mesh: mesh,
-                        edgeMesh: edgeMesh,
-                        minX: minX,
-                        minZ: minZ,
-                        maxX: maxX,
-                        maxZ: maxZ,
-                        lat: playerLat,
-                        lon: playerLon
-                    };
-                }
-            });
-
-            console.log("Buildings loaded.");
+        // Asynchronous function to fetch OSM data
+        async function fetchOSMData(lat, lon, radius = 500) {
+            const url = `https://overpass-api.de/api/interpreter?data=[out:json];way[building](around:${radius},${lat},${lon});out body;node(w);out;`;
+            const response = await fetch(url);
+            const data = await response.json();
+            return data;
         }
 
-        // Animation Loop
+        // Function to process OSM data and extract nodes and ways
+        function processOSMData(data) {
+            const nodes = {};
+            const ways = [];
+        
+            data.elements.forEach(element => {
+                if (element.type === 'node') {
+                    nodes[element.id] = { lat: element.lat, lon: element.lon };
+                } else if (element.type === 'way' && element.nodes) {
+                    ways.push(element);
+                }
+            });
+            return { nodes, ways };
+        }
+
+        // Function to calculate distance between two coordinates using Haversine formula
+        function haversine(lat1, lon1, lat2, lon2) {
+            const R = 6371e3; // Radius of the earth in meters
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a =
+                Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            const d = R * c;
+            return d;
+        }
+
+        // Function to check if a building is within the viewing distance
+        function isBuildingWithinViewDistance(building, cameraX, cameraZ, viewDistance) {
+            const buildingX = (building.lon - playerLon) * 100000;
+            const buildingZ = (building.lat - playerLat) * 100000;
+            return Math.sqrt(Math.pow(cameraX - buildingX, 2) + Math.pow(cameraZ - buildingZ, 2)) < viewDistance;
+        }
+
+        // Function to create and add a building to the scene
+        function createBuildingMesh(way, nodes) {
+            const shape = new THREE.Shape();
+            let first = true;
+            let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
+
+            way.nodes.forEach(nodeId => {
+                const node = nodes[nodeId];
+                if (node) {
+                    let x = (node.lon - playerLon) * 100000;
+                    let z = (node.lat - playerLat) * 100000;
+                    minX = Math.min(minX, x);
+                    minZ = Math.min(minZ, z);
+                    maxX = Math.max(maxX, x);
+                    maxZ = Math.max(maxZ, z);
+
+                    if (first) {
+                        shape.moveTo(x, z);
+                        first = false;
+                    } else {
+                        shape.lineTo(x, z);
+                    }
+                }
+            });
+
+            let height = Math.random() * 47 + 3;
+            let extrudeSettings = { depth: height, bevelEnabled: false };
+            let geometry = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+            let material = new THREE.MeshBasicMaterial({ color: 0xffffff });
+            let mesh = new THREE.Mesh(geometry, material);
+            mesh.rotation.x = -Math.PI / 2;
+
+            let edges = new THREE.EdgesGeometry(geometry);
+            let edgeMaterial = new THREE.LineBasicMaterial({ color: 0x000000 });
+            let edgeMesh = new THREE.LineSegments(edges, edgeMaterial);
+            edgeMesh.rotation.x = -Math.PI / 2;
+
+            return { mesh, edgeMesh, minX, minZ, maxX, maxZ, lat: playerLat, lon: playerLon, osmId: way.id }; // Return the osmId
+        }
+
+        // Function to add a building to the scene, and store it
+        function addBuildingToScene(buildingData) {
+            const { mesh, edgeMesh, osmId } = buildingData;
+            scene.add(mesh);
+            scene.add(edgeMesh);
+            buildings[osmId] = {
+                mesh: mesh,
+                edgeMesh: edgeMesh,
+                minX: buildingData.minX,
+                minZ: buildingData.minZ,
+                maxX: buildingData.maxX,
+                maxZ: buildingData.maxZ,
+                lat: buildingData.lat,
+                lon: buildingData.lon,
+            };
+            loadedBuildings.add(osmId);
+        }
+
+        // Function to remove a building from the scene and delete it
+        function removeBuildingFromScene(osmId) {
+            const building = buildings[osmId];
+            if (building) {
+                scene.remove(building.mesh);
+                scene.remove(building.edgeMesh);
+                delete buildings[osmId];
+                loadedBuildings.delete(osmId);
+            }
+        }
+
+        // Load initial buildings
+        async function loadInitialBuildings() {
+            const data = await fetchOSMData(playerLat, playerLon);
+            osmData = processOSMData(data); // Store the data
+        
+            for (const way of osmData.ways) {
+                const buildingData = createBuildingMesh(way, osmData.nodes);
+                if (isBuildingWithinViewDistance(buildingData, aerialX, aerialZ, viewDistance)) {
+                    addBuildingToScene(buildingData);
+                }
+            }
+        }
+
+        // Main animation function
         function animate() {
             requestAnimationFrame(animate);
 
@@ -245,74 +318,72 @@
             if (keys["a"]) aerialX -= aerialSpeed;
             if (keys["d"]) aerialX += aerialSpeed;
 
-            aerialZoom = Math.max(500, Math.min(3000, aerialZoom));
-            resetAerialCamera();
+            if (keys["zoomIn"]) {
+                aerialZoom -= zoomSpeed;
+                aerialZoom = Math.max(500, aerialZoom);
+                resetAerialCamera();
+            }
+            if (keys["zoomOut"]) {
+                aerialZoom += zoomSpeed;
+                aerialZoom = Math.min(3000, aerialZoom);
+                resetAerialCamera();
+            }
+
             playerMarker.position.set(aerialX, 5, aerialZ);
 
-            removeBuildingsOutsideViewport();
+            // Get current camera position
+            const cameraX = aerialX;
+            const cameraZ = aerialZ;
 
-            const distanceMoved = aerialCamera.position.distanceTo(previousCameraPosition);
-            if (distanceMoved > 500) {
-                clearBuildings();
-                loadBuildings();
-                previousCameraPosition.copy(aerialCamera.position);
-            }
-
-            renderer.render(scene, aerialCamera);
-        }
-
-        // Building Management Functions
-        function removeBuildingsOutsideViewport() {
-            const frustum = new THREE.Frustum();
-            const matrix = new THREE.Matrix4();
-            aerialCamera.updateMatrixWorld();
-            matrix.multiplyMatrices(aerialCamera.projectionMatrix, aerialCamera.matrixWorldInverse);
-            frustum.setFromProjectionMatrix(matrix);
-
-            for (let id in buildings) {
-                const building = buildings[id];
-                if (building) {
-                    const min = new THREE.Vector3(building.minX, -10, building.minZ);
-                    const max = new THREE.Vector3(building.maxX, building.mesh.geometry.parameters.depth + 10, building.maxZ);
-                    const boundingBox = new THREE.Box3(min, max);
-
-                    if (!frustum.intersectsBox(boundingBox)) {
-                        if (building.mesh) scene.remove(building.mesh);
-                        if (building.edgeMesh) scene.remove(building.edgeMesh);
-                        delete buildings[id];
+            // Load and display buildings
+            for (const way of osmData.ways) {
+                const buildingData = createBuildingMesh(way, osmData.nodes);
+                const osmId = way.id;
+                if (isBuildingWithinViewDistance(buildingData, cameraX, cameraZ, viewDistance)) {
+                    if (!loadedBuildings.has(osmId)) {
+                        addBuildingToScene(buildingData);
                     }
+                } else {
+                    removeBuildingFromScene(osmId);
                 }
             }
-        }
-
-        function clearBuildings() {
-            for (let id in buildings) {
-                const building = buildings[id];
-                if (building.mesh) scene.remove(building.mesh);
-                if (building.edgeMesh) scene.remove(building.edgeMesh);
-            }
-            buildings = {};
-            loadedChunks.clear();
+            renderer.render(scene, aerialCamera);
         }
 
         // Location Function
         function useLocation() {
             if (navigator.geolocation) {
                 navigator.geolocation.getCurrentPosition(
-                    (position) => {
+                    async (position) => {
                         const newLat = position.coords.latitude;
                         const newLon = position.coords.longitude;
-
+        
                         const distance = haversine(playerLat, playerLon, newLat, newLon);
                         if (distance > 100) {
                             playerLat = newLat;
                             playerLon = newLon;
                             aerialX = 0;
                             aerialZ = 0;
-                            loadedChunks.clear();
-                            clearBuildings();
                             resetAerialCamera();
-                            loadBuildings();
+        
+                            // Fetch new OSM data
+                            const newData = await fetchOSMData(newLat, newLon);
+                            osmData = processOSMData(newData);
+        
+                            // Clear existing buildings
+                            for (const id in buildings) {
+                                removeBuildingFromScene(parseInt(id));
+                            }
+                            buildings = {};
+                            loadedBuildings.clear();
+        
+                            // Load and display buildings
+                            for (const way of osmData.ways) {
+                                const buildingData = createBuildingMesh(way, osmData.nodes);
+                                if (isBuildingWithinViewDistance(buildingData, aerialX, aerialZ, viewDistance)) {
+                                    addBuildingToScene(buildingData);
+                                }
+                            }
                             previousCameraPosition.copy(aerialCamera.position);
                         } else {
                             alert("Location not changed significantly. Not reloading.");
@@ -326,19 +397,6 @@
             } else {
                 alert("Geolocation is not supported by this browser.");
             }
-        }
-
-        // Haversine Distance Formula
-        function haversine(lat1, lon1, lat2, lon2) {
-            const R = 6371e3; // Radius of earth in km
-            const dLat = (lat2 - lat1) * Math.PI / 180;
-            const dLon = (lon2 - lon1) * Math.PI / 180;
-            const a = 
-                Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-                Math.sin(dLon / 2) * Math.sin(dLon / 2);
-            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-            return R * c; // Distance in meters
         }
 
         // Initialize Application
