@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>3D OSM Explorer</title>
+    <title>3D OSM Explorer with Mini-map</title>
     <style>
         body { margin: 0; overflow: hidden; font-family: Arial, sans-serif; }
         canvas { display: block; }
@@ -31,7 +31,6 @@
             background-color: rgba(200, 200, 200, 0.7);
         }
 
-        /* Add styling for the labels */
         .direction-label {
             position: absolute;
             color: white;
@@ -45,25 +44,24 @@
         #east-label { right: 10px; top: 50%; transform: translateY(-50%); }
         #west-label { left: 10px; top: 50%; transform: translateY(-50%); }
 
-        /* Compass Styles */
         #compass {
             position: absolute;
-            bottom: 140px; /* Adjust as necessary to position above joysticks */
+            bottom: 140px;
             left: 50%;
             transform: translateX(-50%);
-            width: 80px; /* Make it smaller */
+            width: 80px;
             height: 80px;
             border-radius: 50%;
-            background-color: rgba(100, 100, 100, 0.7); /* More transparent */
+            background-color: rgba(100, 100, 100, 0.7);
             display: flex;
             justify-content: center;
             align-items: center;
             color: white;
-            font-size: 18px; /* Smaller font size */
+            font-size: 18px;
             font-family: Arial, sans-serif;
             z-index: 10;
-            pointer-events: none; /* Important: Make it non-interactive */
-            box-shadow: 0 0 5px rgba(255, 255, 255, 0.5); /* Subtle shadow */
+            pointer-events: none;
+            box-shadow: 0 0 5px rgba(255, 255, 255, 0.5);
         }
 
         #compass-direction {
@@ -75,7 +73,7 @@
             top: 0;
             left: 50%;
             transform: translateX(-50%);
-            animation: pulse 2s infinite; /* Add a subtle pulse animation */
+            animation: pulse 2s infinite;
         }
 
         @keyframes pulse {
@@ -97,7 +95,74 @@
         #compass-e { right: -10px; top: 50%; transform: translateY(-50%); }
         #compass-w { left: -10px; top: 50%; transform: translateY(-50%); }
 
+        #mini-map-button {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            width: 40px;
+            height: 40px;
+            background-color: rgba(100, 100, 100, 0.7);
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            color: white;
+            font-size: 24px;
+            z-index: 11;
+            transition: background-color 0.3s;
+        }
 
+        #mini-map-button:hover {
+            background-color: rgba(150, 150, 150, 0.8);
+        }
+
+        #mini-map-window {
+            position: absolute;
+            top: 80px;
+            right: 20px;
+            width: 250px;
+            background-color: rgba(255, 255, 255, 0.95);
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+            z-index: 10;
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease-out;
+        }
+
+        #mini-map-window.active {
+            max-height: 400px;
+        }
+
+        .window-header {
+            padding: 10px;
+            background-color: #f0f0f0;
+            border-bottom: 1px solid #ddd;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .close-icon {
+            cursor: pointer;
+            font-size: 20px;
+            color: #666;
+        }
+
+        .close-icon:hover {
+            color: #333;
+        }
+
+        .window-content {
+            padding: 10px;
+        }
+
+        #miniMapCanvas {
+            width: 100%;
+            height: 200px;
+            border: 1px solid #ddd;
+        }
     </style>
 </head>
 <body>
@@ -119,6 +184,19 @@
         <div id="compass-e" class="compass-label">E</div>
         <div id="compass-w" class="compass-label">W</div>
     </div>
+    <div id="mini-map-button" class="control-panel">
+        <span class="icon">🗺️</span>
+    </div>
+    <div id="mini-map-window" class="collapsible-window">
+        <div class="window-header">
+            Mini Map
+            <span class="close-icon">×</span>
+        </div>
+        <div class="window-content">
+            <canvas id="miniMapCanvas"></canvas>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
     <script>
         let scene, renderer, player, cameraHolder, ground;
@@ -129,6 +207,13 @@
         let pitch = 0;
         let buildings = {};
         let loadedChunks = new Set();
+
+        // Mini-map variables
+        let miniMapCanvas = document.getElementById('miniMapCanvas');
+        let miniMapCtx = miniMapCanvas.getContext('2d');
+        let miniMapButton = document.getElementById('mini-map-button');
+        let miniMapWindow = document.getElementById('mini-map-window');
+        let isMiniMapActive = false;
 
         // Joystick variables
         let joystickLeft = document.getElementById('joystick-left');
@@ -150,13 +235,12 @@
         // Compass
         let compass = document.getElementById('compass');
 
-
         function init() {
+            // Main scene setup
             scene = new THREE.Scene();
             scene.background = new THREE.Color(0x87CEEB);
             renderer = new THREE.WebGLRenderer({ antialias: true, canvas: document.getElementById('threeCanvas') });
             renderer.setSize(window.innerWidth, window.innerHeight);
-            //document.body.appendChild(renderer.domElement);
 
             // Player setup
             player = new THREE.Object3D();
@@ -173,11 +257,16 @@
             // Create ground
             createGround();
 
+            // Mini-map setup
+            miniMapCanvas.width = miniMapCanvas.offsetWidth;
+            miniMapCanvas.height = miniMapCanvas.offsetHeight;
+
+            // Event listeners
             document.addEventListener("keydown", (e) => (keys[e.key] = true));
             document.addEventListener("keyup", (e) => (keys[e.key] = false));
             window.addEventListener('resize', onWindowResize, false);
 
-            // Joystick events for mobile
+            // Joystick events
             if (isMobile) {
                 joystickLeft.style.display = 'block';
                 joystickRight.style.display = 'block';
@@ -189,8 +278,7 @@
                 joystickRight.addEventListener('touchstart', handleTouchStartRight);
                 joystickRight.addEventListener('touchmove', handleTouchMoveRight);
                 joystickRight.addEventListener('touchend', handleTouchEndRight);
-            }
-            else {
+            } else {
                 joystickLeft.style.display = 'block';
                 joystickRight.style.display = 'block';
 
@@ -203,6 +291,9 @@
                 joystickRight.addEventListener('mouseup', handleTouchEndRight);
             }
 
+            // Mini-map events
+            miniMapButton.addEventListener('click', toggleMiniMap);
+            document.querySelector('.close-icon').addEventListener('click', closeMiniMap);
 
             loadInitialBuildings();
             animate();
@@ -212,6 +303,8 @@
             mainCamera.aspect = window.innerWidth / window.innerHeight;
             mainCamera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
+            miniMapCanvas.width = miniMapCanvas.offsetWidth;
+            miniMapCanvas.height = miniMapCanvas.offsetHeight;
         }
 
         function createGround() {
@@ -288,27 +381,28 @@
             if (keys["a"] || joystickLeftX < -0.2) moveX -= moveSpeed;
             if (keys["d"] || joystickLeftX > 0.2) moveX += moveSpeed;
 
-            //  Calculate the player's current yaw (rotation around the Y axis)
             const yaw = player.rotation.y;
 
-            // Use cosine and sine to calculate forward and sideways movement relative to the player's direction
             player.position.x += Math.cos(yaw) * moveZ + Math.cos(yaw + Math.PI / 2) * moveX;
             player.position.z += Math.sin(yaw) * moveZ + Math.sin(yaw + Math.PI / 2) * moveX;
-
 
             if (keys["ArrowLeft"] || joystickRightX < -0.2) player.rotation.y += rotateSpeed;
             if (keys["ArrowRight"] || joystickRightX > 0.2) player.rotation.y -= rotateSpeed;
             if (keys["ArrowUp"] || joystickRightY < -0.2) pitch -= lookSpeed;
             if (keys["ArrowDown"] || joystickRightY > 0.2) pitch += lookSpeed;
 
-
             pitch = Math.max(-Math.PI / 4, Math.min(Math.PI / 4, pitch));
             cameraHolder.rotation.x = pitch;
 
             renderer.render(scene, mainCamera);
 
-            // Update compass direction
+            // Update compass
             updateCompass(yaw);
+
+            // Update mini-map
+            if (isMiniMapActive) {
+                renderMiniMap();
+            }
         }
 
         function useLocation() {
@@ -339,20 +433,87 @@
             }
         }
 
-        // Add this event listener
-        window.onload = function () {
-            document.getElementById("useLocation").addEventListener("click", useLocation);
-        };
-
-        // Load initial content
-        function loadInitialBuildings() {
-            loadBuildings();
+        function toggleMiniMap() {
+            isMiniMapActive = !isMiniMapActive;
+            miniMapWindow.classList.toggle('active');
+            if (isMiniMapActive) {
+                renderMiniMap();
+            }
         }
 
-        // Initialize
-        init();
+        function closeMiniMap() {
+            isMiniMapActive = false;
+            miniMapWindow.classList.remove('active');
+        }
 
-        // --- Joystick functions ---
+        function renderMiniMap() {
+            if (!isMiniMapActive) return;
+
+            miniMapCtx.clearRect(0, 0, miniMapCanvas.width, miniMapCanvas.height);
+            
+            // Draw world boundaries
+            miniMapCtx.strokeStyle = '#999';
+            miniMapCtx.strokeRect(0, 0, miniMapCanvas.width, miniMapCanvas.height);
+            
+            // Draw player position
+            const centerX = miniMapCanvas.width / 2;
+            const centerY = miniMapCanvas.height / 2;
+            miniMapCtx.fillStyle = 'red';
+            miniMapCtx.beginPath();
+            miniMapCtx.arc(centerX, centerY, 5, 0, Math.PI * 2);
+            miniMapCtx.fill();
+            
+            // Draw view direction
+            const viewAngle = player.rotation.y;
+            const arrowLength = 10;
+            miniMapCtx.beginPath();
+            miniMapCtx.moveTo(centerX, centerY);
+            miniMapCtx.lineTo(
+                centerX + Math.cos(viewAngle) * arrowLength,
+                centerY + Math.sin(viewAngle) * arrowLength
+            );
+            miniMapCtx.strokeStyle = 'blue';
+            miniMapCtx.stroke();
+            
+            // Draw loaded buildings
+            Object.values(buildings).forEach(({mesh}) => {
+                const position = mesh.position;
+                const x = (position.x / 50000) * miniMapCanvas.width + centerX;
+                const z = (position.z / 50000) * miniMapCanvas.height + centerY;
+                
+                miniMapCtx.fillStyle = 'gray';
+                miniMapCtx.fillRect(x - 2, z - 2, 4, 4);
+            });
+
+            requestAnimationFrame(renderMiniMap);
+        }
+
+        function updateCompass(yaw) {
+            let direction = 'N';
+            const angle = (yaw * 180 / Math.PI + 360) % 360;
+            
+            if (angle >= 337.5 || angle < 22.5) {
+                direction = 'N';
+            } else if (angle >= 22.5 && angle < 67.5) {
+                direction = 'NE';
+            } else if (angle >= 67.5 && angle < 112.5) {
+                direction = 'E';
+            } else if (angle >= 112.5 && angle < 157.5) {
+                direction = 'SE';
+            } else if (angle >= 157.5 && angle < 202.5) {
+                direction = 'S';
+            } else if (angle >= 202.5 && angle < 247.5) {
+                direction = 'SW';
+            } else if (angle >= 247.5 && angle < 292.5) {
+                direction = 'W';
+            } else if (angle >= 292.5 && angle < 337.5) {
+                direction = 'NW';
+            }
+            
+            compass.textContent = direction;
+            document.getElementById('compass-direction').style.transform = `translateX(-50%) rotate(${yaw * 180 / Math.PI}deg)`;
+        }
+
         function handleTouchStartLeft(e) {
             e.preventDefault();
             joystickLeftActive = true;
@@ -397,8 +558,6 @@
             joystickLeftCenter.style.top = '50%';
             joystickLeftCenter.style.backgroundColor = 'rgba(200, 200, 200, 0.7)';
         }
-
-
 
         function handleTouchStartRight(e) {
             e.preventDefault();
@@ -445,31 +604,11 @@
             joystickRightCenter.style.backgroundColor = 'rgba(200, 200, 200, 0.7)';
         }
 
-        function updateCompass(yaw) {
-            let direction = 'N';
-            const angle = (yaw * 180 / Math.PI + 360) % 360; // Normalize angle to 0-360 range
-            
-            if (angle >= 337.5 || angle < 22.5) {
-                direction = 'N';
-            } else if (angle >= 22.5 && angle < 67.5) {
-                direction = 'NE';
-            } else if (angle >= 67.5 && angle < 112.5) {
-                direction = 'E';
-            } else if (angle >= 112.5 && angle < 157.5) {
-                direction = 'SE';
-            } else if (angle >= 157.5 && angle < 202.5) {
-                direction = 'S';
-            } else if (angle >= 202.5 && angle < 247.5) {
-                direction = 'SW';
-            } else if (angle >= 247.5 && angle < 292.5) {
-                direction = 'W';
-            } else if (angle >= 292.5 && angle < 337.5) {
-                direction = 'NW';
-            }
-            compass.textContent = direction;
-            // Rotate the compass needle.
-            document.getElementById('compass-direction').style.transform = `translateX(-50%) rotate(${yaw * 180 / Math.PI}deg)`;
+        function loadInitialBuildings() {
+            loadBuildings();
         }
+
+        init();
     </script>
 </body>
 </html>
