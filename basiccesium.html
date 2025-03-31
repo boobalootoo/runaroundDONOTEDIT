@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>UK Building Outlines</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <script src="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Cesium.js"></script>
+    <link href="https://cesium.com/downloads/cesiumjs/releases/1.114/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+    <style>
+        /* Ensure the viewer fills the entire page */
+        #cesiumContainer {
+            width: 100%;
+            height: 100vh;
+            margin: 0;
+            padding: 0;
+            overflow: hidden; /* Prevent scrollbars */
+        }
+    </style>
+</head>
+<body>
+    <div id="cesiumContainer"></div>
+    <script>
+        window.onload = async function() {
+            // Replace with your actual Cesium Ion access token
+            Cesium.Ion.defaultAccessToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiIzMGZkNWQ0ZS01M2JjLTQ3ZTAtOWE5OC1mNzJjMTlkNTViZjciLCJpZCI6Mjg3OTEzLCJpYXQiOjE3NDI5OTIyNzd9.FNwe_7JWOqcsO854hg_Kokvw8KR-Af5B8qSAz7v-kSM';
+
+            try {
+                // Initialize the Cesium Viewer
+                const viewer = new Cesium.Viewer('cesiumContainer');
+
+                // Specify the ID of the Cesium Ion asset for UK Building Outlines (96188)
+                const tileset = await Cesium.Cesium3DTileset.fromIonAssetId(96188);
+
+                // Add the tileset to the scene
+                viewer.scene.primitives.add(tileset);
+
+                // Fly the camera to the UK (optional, but provides a good initial view)
+                viewer.camera.flyTo({
+                    destination: Cesium.Cartesian3.fromDegrees(-3.4360, 55.3781, 1000000), // Approximate center of UK, altitude 1000km
+                    orientation: {
+                        heading: Cesium.Math.toRadians(0.0),
+                        pitch: Cesium.Math.toRadians(-90.0), // Look straight down
+                        roll: 0.0
+                    }
+                });
+
+            } catch (error) {
+                console.error('Error loading Cesium data:', error);
+                // Display a user-friendly error message in the console or in the webpage
+                // You could create a div in the body to display the error.
+                // document.getElementById('cesiumContainer').innerHTML = `<div style="color: red;">Error loading map data: ${error.message}</div>`;
+            }
+        };
+    </script>
+</body>
+</html>
