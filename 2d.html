@@ -5,8 +5,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>3D OSM Explorer - Aerial View</title>
     <style>
-        body { margin: 0; overflow: hidden; font-family: Arial, sans-serif; }
-        canvas { display: block; }
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            font-family: Arial, sans-serif; 
+        }
+        canvas { 
+            display: block; 
+        }
+
+        /* Button Styles */
         #useLocation {
             position: absolute;
             top: 10px;
@@ -18,12 +26,44 @@
             cursor: pointer;
             z-index: 10;
         }
+
+        /* Zoom Controls Container */
+        .zoom-controls {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            display: flex;
+            gap: 5px;
+            z-index: 10;
+        }
+
+        /* Individual Zoom Buttons */
+        #zoomIn, #zoomOut {
+            padding: 10px 20px;
+            font-size: 16px;
+            background: white;
+            border: 1px solid black;
+            cursor: pointer;
+        }
+
+        /* Hover Effect for Better UX */
+        #zoomIn:hover, #zoomOut:hover {
+            background-color: #f0f0f0;
+        }
     </style>
 </head>
 <body>
+    <!-- UI Elements -->
     <button id="useLocation">Use Location</button>
+    <div class="zoom-controls">
+        <button id="zoomIn">+</button>
+        <button id="zoomOut">-</button>
+    </div>
+
+    <!-- Three.js Script -->
     <script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
     <script>
+        // Global Variables
         let scene, renderer, aerialCamera, playerMarker;
         let aerialSpeed = 10, zoomSpeed = 50;
         let keys = {};
@@ -32,23 +72,30 @@
         let buildings = {}; // Stores buildings, now by OSM ID
         let loadedChunks = new Set();
         const viewDistance = 2000; // Increased view distance
-        let previousCameraPosition = new THREE.Vector3(); // Store previous camera position
+        let previousCameraPosition = new THREE.Vector3();
 
+        // Initialization
         function init() {
+            // Scene Setup
             scene = new THREE.Scene();
             scene.background = new THREE.Color(0x87CEEB);
+            
+            // Renderer Setup
             renderer = new THREE.WebGLRenderer({ antialias: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
             document.body.appendChild(renderer.domElement);
 
+            // Camera Setup
             aerialCamera = new THREE.OrthographicCamera(
                 window.innerWidth / -2, window.innerWidth / 2,
                 window.innerHeight / 2, window.innerHeight / -2,
                 0.1, 5000
             );
+            
             resetAerialCamera();
-            previousCameraPosition.copy(aerialCamera.position); // Initialize previous position
+            previousCameraPosition.copy(aerialCamera.position);
 
+            // Player Marker Setup
             const markerGeometry = new THREE.BoxGeometry(10, 10, 10);
             const markerMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000 });
             playerMarker = new THREE.Mesh(markerGeometry, markerMaterial);
@@ -57,17 +104,29 @@
 
             createSatelliteGround();
 
+            // Event Listeners
             document.addEventListener("keydown", (e) => (keys[e.key] = true));
             document.addEventListener("keyup", (e) => (keys[e.key] = false));
             window.addEventListener('resize', onWindowResize, false);
 
-            // Add event listener to the button
+            // Button Event Listeners
             document.getElementById("useLocation").addEventListener("click", useLocation);
+            document.getElementById("zoomIn").addEventListener("click", () => {
+                aerialZoom -= zoomSpeed;
+                aerialZoom = Math.max(500, Math.min(3000, aerialZoom));
+                resetAerialCamera();
+            });
+            document.getElementById("zoomOut").addEventListener("click", () => {
+                aerialZoom += zoomSpeed;
+                aerialZoom = Math.max(500, Math.min(3000, aerialZoom));
+                resetAerialCamera();
+            });
 
             loadBuildings();
             animate();
         }
 
+        // Window Resize Handler
         function onWindowResize() {
             aerialCamera.left = window.innerWidth / -2;
             aerialCamera.right = window.innerWidth / 2;
@@ -77,11 +136,24 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
         }
 
+        // Camera Reset Function
         function resetAerialCamera() {
+            // Calculate the zoom factor
+            const zoomFactor = 2000 / aerialZoom; // 2000 is the base view distance
+            
+            // Update the camera's orthographic frustum
+            aerialCamera.left = -window.innerWidth / 2 * zoomFactor;
+            aerialCamera.right = window.innerWidth / 2 * zoomFactor;
+            aerialCamera.top = window.innerHeight / 2 * zoomFactor;
+            aerialCamera.bottom = -window.innerHeight / 2 * zoomFactor;
+            
+            // Update camera position and look-at
             aerialCamera.position.set(aerialX, aerialZoom, aerialZ);
             aerialCamera.lookAt(aerialX, 0, aerialZ);
+            aerialCamera.updateProjectionMatrix();
         }
 
+        // Ground Creation Function
         function createSatelliteGround() {
             const groundGeometry = new THREE.PlaneGeometry(5000, 5000);
             const groundMaterial = new THREE.MeshBasicMaterial({ color: 0x228B22, side: THREE.DoubleSide });
@@ -90,6 +162,7 @@
             scene.add(ground);
         }
 
+        // Building Loading Function
         async function loadBuildings() {
             let chunkKey = `${Math.floor(playerLat)},${Math.floor(playerLon)}`;
             if (loadedChunks.has(chunkKey)) return;
@@ -112,7 +185,8 @@
                 if (el.type === "way" && el.nodes) {
                     const shape = new THREE.Shape();
                     let first = true;
-                    let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity; // For bounding box
+                    let minX = Infinity, minZ = Infinity, maxX = -Infinity, maxZ = -Infinity;
+                    
                     el.nodes.forEach(nodeId => {
                         if (nodes[nodeId]) {
                             let x = (nodes[nodeId].lon - playerLon) * scale;
@@ -121,6 +195,7 @@
                             minZ = Math.min(minZ, z);
                             maxX = Math.max(maxX, x);
                             maxZ = Math.max(maxZ, z);
+                            
                             if (first) {
                                 shape.moveTo(x, z);
                                 first = false;
@@ -144,7 +219,7 @@
                     edgeMesh.rotation.x = -Math.PI / 2;
                     scene.add(edgeMesh);
 
-                    const buildingId = el.id; // Use OSM ID as key
+                    const buildingId = el.id;
                     buildings[buildingId] = {
                         mesh: mesh,
                         edgeMesh: edgeMesh,
@@ -152,14 +227,16 @@
                         minZ: minZ,
                         maxX: maxX,
                         maxZ: maxZ,
-                        lat: playerLat,  // Store for coordinate lock.  Important.
+                        lat: playerLat,
                         lon: playerLon
                     };
                 }
             });
+
             console.log("Buildings loaded.");
         }
 
+        // Animation Loop
         function animate() {
             requestAnimationFrame(animate);
 
@@ -167,27 +244,24 @@
             if (keys["s"]) aerialZ += aerialSpeed;
             if (keys["a"]) aerialX -= aerialSpeed;
             if (keys["d"]) aerialX += aerialSpeed;
-            if (keys["q"]) aerialZoom -= zoomSpeed;
-            if (keys["e"]) aerialZoom += zoomSpeed;
 
             aerialZoom = Math.max(500, Math.min(3000, aerialZoom));
-            aerialCamera.position.set(aerialX, aerialZoom, aerialZ);
-            aerialCamera.lookAt(aerialX, 0, aerialZ);
+            resetAerialCamera();
             playerMarker.position.set(aerialX, 5, aerialZ);
 
-            removeBuildingsOutsideViewport(); // Remove buildings outside view
+            removeBuildingsOutsideViewport();
 
-            // Check for significant camera movement
             const distanceMoved = aerialCamera.position.distanceTo(previousCameraPosition);
-            if (distanceMoved > 500) { // Adjust threshold as needed
-                clearBuildings();        // Clear buildings
-                loadBuildings();       // Reload
-                previousCameraPosition.copy(aerialCamera.position); // Update
+            if (distanceMoved > 500) {
+                clearBuildings();
+                loadBuildings();
+                previousCameraPosition.copy(aerialCamera.position);
             }
 
             renderer.render(scene, aerialCamera);
         }
 
+        // Building Management Functions
         function removeBuildingsOutsideViewport() {
             const frustum = new THREE.Frustum();
             const matrix = new THREE.Matrix4();
@@ -198,16 +272,14 @@
             for (let id in buildings) {
                 const building = buildings[id];
                 if (building) {
-                    // Create a bounding box for the building
                     const min = new THREE.Vector3(building.minX, -10, building.minZ);
-                    const max = new THREE.Vector3(building.maxX, building.mesh.geometry.parameters.depth + 10, building.maxZ); // Use actual height
+                    const max = new THREE.Vector3(building.maxX, building.mesh.geometry.parameters.depth + 10, building.maxZ);
                     const boundingBox = new THREE.Box3(min, max);
 
                     if (!frustum.intersectsBox(boundingBox)) {
-                        // Remove from scene
                         if (building.mesh) scene.remove(building.mesh);
                         if (building.edgeMesh) scene.remove(building.edgeMesh);
-                        delete buildings[id]; // Remove from storage
+                        delete buildings[id];
                     }
                 }
             }
@@ -216,17 +288,14 @@
         function clearBuildings() {
             for (let id in buildings) {
                 const building = buildings[id];
-                if (building.mesh) {
-                    scene.remove(building.mesh);
-                }
-                if (building.edgeMesh) {
-                    scene.remove(building.edgeMesh);
-                }
+                if (building.mesh) scene.remove(building.mesh);
+                if (building.edgeMesh) scene.remove(building.edgeMesh);
             }
             buildings = {};
             loadedChunks.clear();
         }
 
+        // Location Function
         function useLocation() {
             if (navigator.geolocation) {
                 navigator.geolocation.getCurrentPosition(
@@ -234,9 +303,8 @@
                         const newLat = position.coords.latitude;
                         const newLon = position.coords.longitude;
 
-                        // Check if the location has actually changed significantly
                         const distance = haversine(playerLat, playerLon, newLat, newLon);
-                        if (distance > 100) { // 100 meters threshold, adjust as needed.
+                        if (distance > 100) {
                             playerLat = newLat;
                             playerLon = newLon;
                             aerialX = 0;
@@ -247,7 +315,7 @@
                             loadBuildings();
                             previousCameraPosition.copy(aerialCamera.position);
                         } else {
-                            alert("Location not changed significantly.  Not reloading.");
+                            alert("Location not changed significantly. Not reloading.");
                         }
                     },
                     (error) => {
@@ -260,22 +328,20 @@
             }
         }
 
-        // Haversine distance formula (in meters)
+        // Haversine Distance Formula
         function haversine(lat1, lon1, lat2, lon2) {
             const R = 6371e3; // Radius of earth in km
             const dLat = (lat2 - lat1) * Math.PI / 180;
             const dLon = (lon2 - lon1) * Math.PI / 180;
-            const a =
+            const a = 
                 Math.sin(dLat / 2) * Math.sin(dLat / 2) +
                 Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-                Math.sin(dLon / 2) * Math.sin(dLon / 2)
-            ;
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
             const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-            const d = R * c; // Distance in meters
-            return d;
+            return R * c; // Distance in meters
         }
 
-        // Start the application
+        // Initialize Application
         init();
     </script>
 </body>
