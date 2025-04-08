@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>3D OSM Explorer with Mini-map</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: Arial, sans-serif; }
+        canvas { display: block; }
+        #joystick-left, #joystick-right { position: absolute; bottom: 20px; width: 100px; height: 100px; border-radius: 50%; background-color: rgba(100, 100, 100, 0.5); cursor: pointer; display: block; }
+        #joystick-left { left: 20px; }
+        #joystick-right { right: 20px; }
+        #joystick-left-center, #joystick-right-center { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 40px; height: 40px; border-radius: 50%; background-color: rgba(200, 200, 200, 0.7); }
+        .direction-label { position: absolute; color: white; font-size: 12px; font-family: Arial, sans-serif; text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8); }
+        #north-label { top: 10px; left: 50%; transform: translateX(-50%); }
+        #south-label { bottom: 10px; left: 50%; transform: translateX(-50%); }
+        #east-label { right: 10px; top: 50%; transform: translateY(-50%); }
+        #west-label { left: 10px; top: 50%; transform: translateY(-50%); }
+        #mini-map-button { position: absolute; top: 20px; right: 20px; width: 40px; height: 40px; background-color: rgba(100, 100, 100, 0.7); border-radius: 50%; cursor: pointer; display: flex; justify-content: center; align-items: center; color: white; font-size: 24px; z-index: 11; transition: background-color 0.3s; }
+        #mini-map-button:hover { background-color: rgba(150, 150, 150, 0.8); }
+        #mini-map-window { position: absolute; top: 80px; right: 20px; width: 250px; background-color: rgba(255, 255, 255, 0.95); border-radius: 8px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2); z-index: 10; max-height: 0; overflow: hidden; transition: max-height 0.3s ease-out; }
+        #mini-map-window.active { max-height: 400px; }
+        .window-header { padding: 10px; background-color: #f0f0f0; border-bottom: 1px solid #ddd; display: flex; justify-content: space-between; align-items: center; }
+        .close-icon { cursor: pointer; font-size: 20px; color: #666; }
+        .close-icon:hover { color: #333; }
+        .window-content { padding: 10px; }
+        #miniMapCanvas { width: 100%; height: 200px; border: 1px solid #ddd; }
+    </style>
+</head>
+<body>
+    <canvas id="threeCanvas"></canvas>
+    <div id="joystick-left">
+        <div id="joystick-left-center"></div>
+        <div id="north-label" class="direction-label">N</div>
+        <div id="south-label" class="direction-label">S</div>
+        <div id="east-label" class="direction-label">E</div>
+        <div id="west-label" class="direction-label">W</div>
+    </div>
+    <div id="joystick-right">
+        <div id="joystick-right-center"></div>
+    </div>
+   
+    <div id="mini-map-button" class="control-panel">
+        <span class="icon">🗺️</span>
+    </div>
+    <div id="mini-map-window" class="collapsible-window">
+        <div class="window-header">
+            Mini Map
+            <span class="close-icon">×</span>
+        </div>
+        <div class="window-content">
+            <canvas id="miniMapCanvas"></canvas>
+        </div>
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.min.js"></script>
+    <script>
+        // --- Scene Setup ---
+        let scene, renderer,  ground, mainCamera, pitch = 0, buildings = {}, loadedChunks = new Set();
+        // --- Mini-map Variables ---
+        let miniMapCanvas, miniMapCtx, miniMapButton, miniMapWindow, isMiniMapActive = false;
+        // --- Joystick Variables ---
+        let joystickLeft, joystickLeftCenter, joystickRight, joystickRightCenter, joystickLeftActive = false, joystickRightActive = false, joystickLeftX = 0, joystickLeftY = 0, joystickRightX = 0, joystickRightY = 0, touchStartPointLeft = { x: 0, y: 0 }, touchStartPointRight = { x: 0, y: 0 };
+        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+        // --- Game Controls ---
+        let moveSpeed = 0.3, rotateSpeed = 0.05, lookSpeed = 0.02, keys = {}, playerLat = 51.5074, playerLon = -0.1278;  // Initial London coordinates
+
+        function init() {
+            const canvas = document.getElementById('threeCanvas');
+            renderer = new THREE.WebGLRenderer({ antialias: true, canvas });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            (scene = new THREE.Scene()).background = new THREE.Color(0x87CEEB);
+
+
+            mainCamera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            mainCamera.position.set(0, 1.5, 5); // Set the camera's initial position
+
+
+            scene.add(mainCamera); // Add the camera directly to the scene
+
+
+            createGround();
+            setupMiniMap();
+            setupEventListeners();
+            loadInitialBuildings();
+            animate();
+        }
+
+        function createGround() {
+            const geometry = new THREE.PlaneGeometry(5000, 5000);
+            const material = new THREE.MeshBasicMaterial({ color: 0x228B22, side: THREE.DoubleSide });
+            ground = new THREE.Mesh(geometry, material);
+            ground.rotation.x = -Math.PI / 2;
+            scene.add(ground);
+        }
+
+        function setupMiniMap() {
+            miniMapCanvas = document.getElementById('miniMapCanvas');
+            miniMapCtx = miniMapCanvas.getContext('2d');
+            miniMapButton = document.getElementById('mini-map-button');
+            miniMapWindow = document.getElementById('mini-map-window');
+            miniMapCanvas.width = miniMapCanvas.offsetWidth;
+            miniMapCanvas.height = miniMapCanvas.offsetHeight;
+        }
+
+        function setupEventListeners() {
+            document.addEventListener("keydown", (e) => (keys[e.key] = true));
+            document.addEventListener("keyup", (e) => (keys[e.key] = false));
+            window.addEventListener('resize', onWindowResize, false);
+            miniMapButton.addEventListener('click', toggleMiniMap);
+            document.querySelector('.close-icon').addEventListener('click', closeMiniMap);
+            const joystickLeftElement = document.getElementById('joystick-left');
+            const joystickRightElement = document.getElementById('joystick-right');
+            if (isMobile) {
+                joystickLeftElement.style.display = 'block';
+                joystickRightElement.style.display = 'block';
+                joystickLeftElement.addEventListener('touchstart', handleTouchStartLeft);
+                joystickLeftElement.addEventListener('touchmove', handleTouchMoveLeft);
+                joystickLeftElement.addEventListener('touchend', handleTouchEndLeft);
+                joystickRightElement.addEventListener('touchstart', handleTouchStartRight);
+                joystickRightElement.addEventListener('touchmove', handleTouchMoveRight);
+                joystickRightElement.addEventListener('touchend', handleTouchEndRight);
+            } else {
+                joystickLeftElement.style.display = 'block';
+                joystickRightElement.style.display = 'block';
+                joystickLeftElement.addEventListener('mousedown', handleTouchStartLeft);
+                joystickLeftElement.addEventListener('mousemove', handleTouchMoveLeft);
+                joystickLeftElement.addEventListener('mouseup', handleTouchEndLeft);
+                joystickRightElement.addEventListener('mousedown', handleTouchStartRight);
+                joystickRightElement.addEventListener('mousemove', handleTouchMoveRight);
+                joystickRightElement.addEventListener('mouseup', handleTouchEndRight);
+            }
+            joystickLeft = document.getElementById('joystick-left-center');
+            joystickRight = document.getElementById('joystick-right-center');
+        }
+
+        function onWindowResize() {
+            mainCamera.aspect = window.innerWidth / window.innerHeight;
+            mainCamera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            miniMapCanvas.width = miniMapCanvas.offsetWidth;
+            miniMapCanvas.height = miniMapCanvas.offsetHeight;
+        }
+
+        async function loadBuildings() {
+            let chunkKey = `${Math.floor(playerLat)},${Math.floor(playerLon)}`;
+            if (loadedChunks.has(chunkKey)) return;
+            loadedChunks.add(chunkKey);
+            console.log("Loading buildings...");
+            const url = `https://overpass-api.de/api/interpreter?data=[out:json];way[building](around:500,${playerLat},${playerLon});out body;node(w);out;`;
+            const response = await fetch(url);
+            const data = await response.json();
+            const nodes = {};
+            data.elements.forEach(el => {
+                if (el.type === "node") {
+                    nodes[el.id] = { lat: el.lat, lon: el.lon };
+                }
+            });
+            const scale = 100000;
+            data.elements.forEach(el => {
+                if (el.type === "way" && el.nodes) {
+                    const shape = new THREE.Shape();
+                    let first = true;
+                    el.nodes.forEach(nodeId => {
+                        const node = nodes[nodeId];
+                        if (node) {
+                            const x = (node.lon - playerLon) * scale;
+                            const z = (node.lat - playerLat) * scale;
+                            if (first) {
+                                shape.moveTo(x, z);
+                                first = false;
+                            } else {
+                                shape.lineTo(x, z);
+                            }
+                        }
+                    });
+                    const height = Math.random() * 47 + 3;
+                    const settings = { depth: height, bevelEnabled: false };
+                    const geometry = new THREE.ExtrudeGeometry(shape, settings);
+                    const material = new THREE.MeshBasicMaterial({ color: 0xffffff });
+                    const mesh = new THREE.Mesh(geometry, material);
+                    mesh.rotation.x = -Math.PI / 2;
+                    scene.add(mesh);
+                    const edgesGeometry = new THREE.EdgesGeometry(geometry);
+                    const edgeMaterial = new THREE.LineBasicMaterial({ color: 0x000000 });
+                    const edgeMesh = new THREE.LineSegments(edgesGeometry, edgeMaterial);
+                    edgeMesh.rotation.x = -Math.PI / 2;
+                    scene.add(edgeMesh);
+                    buildings[chunkKey] = { mesh, edgeMesh };
+                }
+            });
+            console.log("Buildings loaded.");
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            handleMovement();
+            renderer.render(scene, mainCamera);
+            if (isMiniMapActive) {
+                renderMiniMap();
+            }
+        }
+
+        function handleMovement() {
+            let moveX = 0, moveZ = 0;
+            if (keys["w"] || joystickLeftY < -0.2) moveZ -= moveSpeed;
+            if (keys["s"] || joystickLeftY > 0.2) moveZ += moveSpeed;
+            if (keys["a"] || joystickLeftX < -0.2) moveX -= moveSpeed;
+            if (keys["d"] || joystickLeftX > 0.2) moveX += moveSpeed;
+
+            const cameraDirection = new THREE.Vector3();
+            mainCamera.getWorldDirection(cameraDirection);
+
+
+            const forward = new THREE.Vector3(cameraDirection.x, 0, cameraDirection.z);
+            const side = new THREE.Vector3(-forward.z, 0, forward.x);
+
+
+            forward.multiplyScalar(moveZ);
+            side.multiplyScalar(moveX);
+
+
+            mainCamera.position.add(forward);
+            mainCamera.position.add(side);
+
+
+            mainCamera.rotation.y += joystickRightX * rotateSpeed;
+            pitch += joystickRightY * lookSpeed;
+            pitch = Math.max(-Math.PI / 4, Math.min(Math.PI / 4, pitch));
+            mainCamera.rotation.x = pitch;
+
+        }
+
+        function useLocation() {
+            if (navigator.geolocation) {
+                navigator.geolocation.getCurrentPosition(
+                    async (position) => {
+                        playerLat = position.coords.latitude;
+                        playerLon = position.coords.longitude;
+                        for (const key in buildings) {
+                            scene.remove(buildings[key].mesh);
+                            scene.remove(buildings[key].edgeMesh);
+                            delete buildings[key];
+                        }
+                        loadedChunks.clear();
+                        loadInitialBuildings();
+                    },
+                    (error) => {
+                        alert("Error getting location: " + error.message);
+                        console.error("Error getting location:", error);
+                    }
+                );
+            } else {
+                alert("Geolocation is not supported by this browser.");
+            }
+        }
+
+        function toggleMiniMap() {
+            isMiniMapActive = !isMiniMapActive;
+            miniMapWindow.classList.toggle('active');
+            if (isMiniMapActive) {
+                renderMiniMap();
+            }
+        }
+
+        function closeMiniMap() {
+            isMiniMapActive = false;
+            miniMapWindow.classList.remove('active');
+        }
+
+        function renderMiniMap() {
+            if (!isMiniMapActive) return;
+            miniMapCtx.clearRect(0, 0, miniMapCanvas.width, miniMapCanvas.height);
+            miniMapCtx.strokeStyle = '#999';
+            miniMapCtx.strokeRect(0, 0, miniMapCanvas.width, miniMapCanvas.height);
+            const centerX = miniMapCanvas.width / 2;
+            const centerY = miniMapCanvas.height / 2;
+            miniMapCtx.fillStyle = 'red';
+            miniMapCtx.beginPath();
+            miniMapCtx.arc(centerX, centerY, 5, 0, Math.PI * 2);
+            miniMapCtx.fill();
+            const viewAngle = mainCamera.rotation.y;
+            const arrowLength = 10;
+            miniMapCtx.beginPath();
+            miniMapCtx.moveTo(centerX, centerY);
+            miniMapCtx.lineTo(
+                centerX + Math.cos(viewAngle) * arrowLength,
+                centerY + Math.sin(viewAngle) * arrowLength
+            );
+            miniMapCtx.strokeStyle = 'blue';
+            miniMapCtx.stroke();
+            Object.values(buildings).forEach(({mesh}) => {
+                const position = mesh.position;
+                const x = (position.x / 50000) * miniMapCanvas.width + centerX;
+                const z = (position.z / 50000) * miniMapCanvas.height + centerY;
+                miniMapCtx.fillStyle = 'gray';
+                miniMapCtx.fillRect(x - 2, z - 2, 4, 4);
+            });
+            requestAnimationFrame(renderMiniMap);
+        }
+
+        function handleTouchStartLeft(e) {
+            e.preventDefault();
+            joystickLeftActive = true;
+            touchStartPointLeft = { x: e.touches ? e.touches[0].clientX : e.clientX, y: e.touches ? e.touches[0].clientY : e.clientY };
+            joystickLeft.style.backgroundColor = 'rgba(255, 255, 255, 0.9)';
+        }
+
+        function handleTouchMoveLeft(e) {
+            e.preventDefault();
+            if (!joystickLeftActive) return;
+            const touchX = e.touches ? e.touches[0].clientX : e.clientX;
+            const touchY = e.touches ? e.touches[0].clientY : e.clientY;
+            const deltaX = touchX - touchStartPointLeft.x;
+            const deltaY = touchY - touchStartPointLeft.y;
+            const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+            const angle = Math.atan2(deltaY, deltaX);
+            const maxDistance = 50;
+            if (distance > maxDistance) {
+                joystickLeftX = Math.cos(angle) * maxDistance / 50;
+                joystickLeftY = Math.sin(angle) * maxDistance / 50;
+            } else {
+                joystickLeftX = deltaX / 50;
+                joystickLeftY = deltaY / 50;
+            }
+            joystickLeft.style.left = `calc(50% + ${joystickLeftX * 30}px)`;
+            joystickLeft.style.top = `calc(50% + ${joystickLeftY * 30}px)`;
+        }
+
+        function handleTouchEndLeft(e) {
+            e.preventDefault();
+            joystickLeftActive = false;
+            joystickLeftX = 0;
+            joystickLeftY = 0;
+            joystickLeft.style.left = '50%';
+            joystickLeft.style.top = '50%';
+            joystickLeft.style.backgroundColor = 'rgba(200, 200, 200, 0.7)';
+        }
+
+        function handleTouchStartRight(e) {
+            e.preventDefault();
+            joystickRightActive = true;
+            touchStartPointRight = { x: e.touches ? e.touches[0].clientX : e.clientX, y: e.touches ? e.touches[0].clientY : e.clientY };
+            joystickRight.style.backgroundColor = 'rgba(255, 255, 255, 0.9)';
+        }
+
+        function handleTouchMoveRight(e) {
+            e.preventDefault();
+            if (!joystickRightActive) return;
+            const touchX = e.touches ? e.touches[0].clientX : e.clientX;
+            const touchY = e.touches ? e.touches[0].clientY : e.clientY;
+            const deltaX = touchX - touchStartPointRight.x;
+            const deltaY = touchY - touchStartPointRight.y;
+            const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
+            const angle = Math.atan2(deltaY, deltaX);
+            const maxDistance = 50;
+            if (distance > maxDistance) {
+                joystickRightX = Math.cos(angle) * maxDistance / 50;
+                joystickRightY = Math.sin(angle) * maxDistance / 50;
+            } else {
+                joystickRightX = deltaX / 50;
+                joystickRightY = deltaY / 50;
+            }
+            joystickRight.style.left = `calc(50% + ${joystickRightX * 30}px)`;
+            joystickRight.style.top = `calc(50% + ${joystickRightY * 30}px)`;
+        }
+
+        function handleTouchEndRight(e) {
+            e.preventDefault();
+            joystickRightActive = false;
+            joystickRightX = 0;
+            joystickRightY = 0;
+            joystickRight.style.left = '50%';
+            joystickRight.style.top = '50%';
+            joystickRight.style.backgroundColor = 'rgba(200, 200, 200, 0.7)';
+        }
+
+        function loadInitialBuildings() {
+            loadBuildings();
+        }
+
+        init();
+    </script>
+</body>
+</html>
