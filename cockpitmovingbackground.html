@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Flight Map Interface</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    /* Ensure HTML and body take full height and prevent scrolling */
+    html, body {
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      font-family: 'Inter', sans-serif; /* Use Inter font */
+    }
+
+    /* Map container styling */
+    #map {
+      position: absolute; /* Position map absolutely to fill the screen */
+      top: 0;
+      left: 0;
+      height: 100vh; /* Map height matches viewport height */
+      width: 100vw; /* Map width matches viewport width */
+      z-index: 0; /* Ensure map is behind the cockpit */
+      border-radius: 8px; /* Rounded corners for the map */
+      /* Add transition for smooth rotation */
+      transition: transform 0.1s ease-out;
+      /* Ensure transform origin is center for rotation */
+      transform-origin: center center;
+    }
+
+    /* Cockpit overlay styling */
+    #cockpit {
+      position: fixed; /* Fix cockpit to cover the entire viewport */
+      top: 0;
+      left: 0;
+      width: 100vw; /* Cockpit width matches viewport width */
+      height: 100vh; /* Cockpit height matches viewport height */
+      background: url('https://raw.githubusercontent.com/boobalootoo/aandd/main/cockpit.png') no-repeat center center;
+      background-size: cover; /* Cover the entire area, potentially cropping */
+      z-index: 1000; /* Ensure cockpit is on top of the map */
+      pointer-events: none; /* Allow mouse events to pass through to the map below */
+      border-radius: 8px; /* Rounded corners for the cockpit overlay */
+    }
+
+    /* Message box for user feedback */
+    #messageBox {
+        position: fixed;
+        bottom: 20px;
+        left: 50%;
+        transform: translateX(-50%);
+        background-color: rgba(0, 0, 0, 0.7);
+        color: white;
+        padding: 10px 20px;
+        border-radius: 8px;
+        z-index: 1001;
+        display: none; /* Hidden by default */
+        font-size: 14px;
+        text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div id="cockpit"></div>
+  <div id="messageBox"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <script>
+    // Ensure all scripts and DOM are loaded before executing the main logic
+    window.onload = function() {
+      // Get the map and message box elements
+      const mapElement = document.getElementById('map');
+      const messageBox = document.getElementById('messageBox');
+
+      // Variable to store the current visual rotation of the map (in degrees)
+      let currentRotation = 0;
+
+      // Variable to store the current geographical location of the "plane"
+      let currentLocation = L.latLng(51.505, -0.09); // Initial map center (London)
+
+      // Interval ID for continuous forward movement
+      let movementInterval;
+
+      /**
+       * Displays a message in a temporary message box.
+       * @param {string} message - The message to display.
+       * @param {number} duration - The duration in milliseconds to display the message.
+       */
+      function showMessage(message, duration = 2000) {
+          messageBox.textContent = message;
+          messageBox.style.display = 'block';
+          setTimeout(() => {
+              messageBox.style.display = 'none';
+          }, duration);
+      }
+
+      // Initialize the Leaflet map
+      const map = L.map('map', {
+        center: currentLocation, // Set initial center to currentLocation
+        zoom: 15, // Initial zoom level
+        zoomControl: false, // Disable default zoom control
+        inertia: false // Disable inertia for more precise movement
+      });
+
+      // Add Esri World Imagery tile layer to the map
+      L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+        attribution: '&copy; Esri & contributors', // Attribution for the tile layer
+        maxZoom: 19 // Set a maximum zoom level for the tile layer
+      }).addTo(map);
+
+      // Initialize an array to store coordinates for the flight trail
+      const trailCoords = [[currentLocation.lat, currentLocation.lng]]; // Start trail at initial location
+      // Create a polyline to represent the trail on the map
+      const trail = L.polyline(trailCoords, { color: 'lime', weight: 3 }).addTo(map);
+
+      // Define the rotation amount in degrees for each left/right arrow key press
+      const rotationAmount = 5; // degrees
+
+      // Base movement speed factor (in degrees per interval)
+      // This value will be scaled by the zoom level
+      const baseMovementSpeedFactor = 0.00002;
+
+      /**
+       * Calculates the movement speed based on the current zoom level.
+       * Higher zoom (closer to ground) means slower real-world movement.
+       * Lower zoom (higher altitude) means faster real-world movement.
+       * @returns {number} The calculated speed in degrees per interval.
+       */
+      function getAdjustedMovementSpeed() {
+        const currentZoom = map.getZoom();
+        // The formula Math.pow(2, (maxZoom - currentZoom)) scales the speed exponentially.
+        // We use 19 as an approximate max zoom for this tile layer.
+        return baseMovementSpeedFactor * Math.pow(2, (19 - currentZoom));
+      }
+
+      /**
+       * Moves the map forward based on the current rotation and speed.
+       */
+      function moveForward() {
+        const speed = getAdjustedMovementSpeed();
+        // Convert currentRotation to radians for trigonometric functions
+        // Corrected: If 0 degrees is North (up on screen), then 90 degrees is East, 180 South, 270 West.
+        // Standard math angles: 0 is East, 90 is North.
+        // So, (90 - currentRotation) aligns screen North with math 90 deg.
+        const headingRadians = (90 - currentRotation) * (Math.PI / 180);
+
+        // Calculate changes in latitude and longitude
+        const deltaLat = speed * Math.sin(headingRadians);
+        const deltaLng = speed * Math.cos(headingRadians);
+
+        // Update the current location
+        currentLocation.lat += deltaLat;
+        currentLocation.lng += deltaLng;
+
+        // Add the new coordinates to the trail
+        trailCoords.push([currentLocation.lat, currentLocation.lng]);
+        // Update the polyline with the new trail coordinates
+        trail.setLatLngs(trailCoords);
+        // Set the map view to the new center
+        map.setView(currentLocation);
+      }
+
+      // Start continuous forward movement
+      movementInterval = setInterval(moveForward, 100); // Move every 100 milliseconds
+
+      // Add a keydown event listener to handle map rotation and zoom
+      document.addEventListener('keydown', (e) => {
+        e.preventDefault(); // Prevent default browser actions (e.g., scrolling)
+
+        switch (e.key) {
+          case 'ArrowUp':
+            // Zoom in
+            map.zoomIn();
+            showMessage('Zooming In');
+            break;
+          case 'ArrowDown':
+            // Zoom out
+            map.zoomOut();
+            showMessage('Zooming Out');
+            break;
+          case 'ArrowLeft':
+            // Rotate map counter-clockwise by updating currentRotation and applying CSS transform
+            currentRotation -= rotationAmount;
+            mapElement.style.transform = `rotate(${currentRotation}deg)`;
+            showMessage(`Rotating Left: ${currentRotation.toFixed(0)}°`);
+            break;
+          case 'ArrowRight':
+            // Rotate map clockwise by updating currentRotation and applying CSS transform
+            currentRotation += rotationAmount;
+            mapElement.style.transform = `rotate(${currentRotation}deg)`;
+            showMessage(`Rotating Right: ${currentRotation.toFixed(0)}°`);
+            break;
+          default:
+            return; // If other key is pressed, do nothing
+        }
+      });
+
+      // Initial message to guide the user
+      showMessage('Use Arrow Keys: Up/Down for Zoom, Left/Right for Rotate. Map is constantly moving!');
+    }; // End of window.onload
+  </script>
+</body>
+</html>
